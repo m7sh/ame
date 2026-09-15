@@ -48,6 +48,7 @@
 | `c` | Clear active queue |
 | `Esc` | Return to previous view or defocus search bar |
 | `1` – `5` | Quick switch view (1: Trending, 2: Radio, 3: Moods, 4: Search, 5: Queue) |
+| `t` | Sync / reload theme from active Omarchy desktop theme |
 | `q` | Safely stop audio, clean IPC sockets/processes, and exit |
 
 ---
