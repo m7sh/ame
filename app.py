@@ -17,8 +17,10 @@ from textual.binding import Binding
 from textual import work
 from textual import events
 
+from pathlib import Path
 from api import YTMusicAPI, Track, Playlist, Category
 from player import MPVPlayer
+from theme import OmarchyThemeManager, ThemeColors
 from ui.widgets import HeaderBar, SidebarNav, BottomPlayerBar
 from ui.views import (
     TrendingView,
@@ -38,11 +40,11 @@ from ui.views import (
 
 
 class YTMusicApp(App):
-    """Modern, Unauthenticated YouTube Music TUI Player."""
+    """Modern, Unauthenticated YouTube Music TUI Player with Omarchy Theme Sync."""
 
     CSS_PATH = "styles.tcss"
     TITLE = "YouTube Music TUI"
-    SUB_TITLE = "Guest Mode • Zero Auth"
+    SUB_TITLE = "Guest Mode • Omarchy Synced"
 
     BINDINGS = [
         Binding("slash", "focus_search", "Search", show=False),
@@ -65,6 +67,7 @@ class YTMusicApp(App):
         Binding("right", "seek_forward", "Seek +5s", show=False),
         Binding("tab", "toggle_focus", "Switch Focus", show=False),
         Binding("escape", "handle_escape", "Back / Defocus", show=False),
+        Binding("t", "reload_theme", "Sync Theme", show=False),
         Binding("q", "quit_app", "Quit", show=False),
         # Number shortcuts for view switching
         Binding("1", "switch_view_1", "Trending", show=False),
@@ -76,6 +79,15 @@ class YTMusicApp(App):
 
     def __init__(self):
         super().__init__()
+        # Initialize Omarchy theme manager and compile current palette into styles.tcss
+        self.theme_manager = OmarchyThemeManager()
+        try:
+            tcss = self.theme_manager.generate_tcss()
+            tcss_file = Path(__file__).parent / "styles.tcss"
+            tcss_file.write_text(tcss, encoding="utf-8")
+        except Exception:
+            pass
+
         self.api = YTMusicAPI()
         self.player = MPVPlayer(resolver=self.api.resolver)
         self.active_view_id: str = "view_trending"
@@ -84,7 +96,9 @@ class YTMusicApp(App):
         self._pre_mute_volume = 80
 
     def compose(self) -> ComposeResult:
-        yield HeaderBar(id="app_header")
+        header = HeaderBar(id="app_header")
+        header.theme_name = self.theme_manager.current_theme.name
+        yield header
         with Horizontal(id="main_body_container"):
             yield SidebarNav(id="app_sidebar")
             with ContentSwitcher(initial="view_trending", id="content_switcher"):
@@ -109,6 +123,9 @@ class YTMusicApp(App):
         # Periodic progress ticker for ultra-smooth seek bar and duration
         self.set_interval(0.25, self._tick_progress)
 
+        # Periodic Omarchy theme sync watcher (checks colors.toml mtime every 1.5s)
+        self.set_interval(1.5, self._check_theme_sync)
+
         # Kick off background data loading without blocking UI startup
         self.load_initial_data()
 
@@ -117,6 +134,53 @@ class YTMusicApp(App):
         if self.player.is_playing and not self.player.is_paused:
             bar = self.query_one("#app_player_bar", BottomPlayerBar)
             bar.update_progress(self.player.playback_pos, self.player.duration)
+
+    def _check_theme_sync(self) -> None:
+        """Check for Omarchy desktop theme changes in background."""
+        new_theme = self.theme_manager.reload()
+        if new_theme:
+            self._apply_new_theme(new_theme)
+
+    def _apply_new_theme(self, new_theme: ThemeColors) -> None:
+        """Apply newly updated Omarchy theme colors dynamically."""
+        try:
+            tcss = self.theme_manager.generate_tcss(new_theme)
+            tcss_file = Path(__file__).parent / "styles.tcss"
+            tcss_file.write_text(tcss, encoding="utf-8")
+
+            # Reload Textual stylesheet
+            self.stylesheet.read_all([str(tcss_file)])
+            self.stylesheet.reparse()
+            self.stylesheet.update(self)
+
+            # Update widgets
+            header = self.query_one("#app_header", HeaderBar)
+            header.theme_name = new_theme.name
+            header.refresh_theme()
+
+            sidebar = self.query_one("#app_sidebar", SidebarNav)
+            sidebar.refresh_theme()
+
+            player_bar = self.query_one("#app_player_bar", BottomPlayerBar)
+            player_bar.refresh_theme()
+
+            # Refresh active view
+            try:
+                view = self.query_one(f"#{self.active_view_id}")
+                if hasattr(view, "refresh_theme"):
+                    view.refresh_theme()
+            except Exception:
+                pass
+
+            self.refresh(layout=True)
+            self.notify(f"Synced with Omarchy theme: {new_theme.name}", title="Palette Synced", timeout=2.5)
+        except Exception:
+            pass
+
+    def action_reload_theme(self) -> None:
+        """Manual trigger to sync with Omarchy desktop theme ('t')."""
+        self.theme_manager.load_theme()
+        self._apply_new_theme(self.theme_manager.current_theme)
 
     def _safe_call(self, callback: Any, *args: Any, **kwargs: Any) -> None:
         """Call callback directly if in main app thread, or via call_from_thread if in background thread."""

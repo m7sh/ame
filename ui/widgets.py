@@ -1,90 +1,139 @@
 """
 ui/widgets.py - Header, Navigation Sidebar, and Sticky Player Bar Widgets.
+Refined with Omarchy theme color integration and interactive seek bar.
 """
 
 from typing import Optional
 from textual.app import ComposeResult
 from textual.widget import Widget
-from textual.widgets import Static, ListView, ListItem, Label
+from textual.widgets import Static, ListView, ListItem
 from textual.containers import Container, Horizontal, Vertical
 from textual.reactive import reactive
 from textual import events
 
 from api import Track, format_seconds
+from theme import ThemeColors
 
 
 class HeaderBar(Widget):
-    """Top application header with cyberpunk styling, active view and status badges."""
+    """Top application header with Omarchy theme sync, active view and status badges."""
 
     active_view = reactive("🎵 Trending / Charts")
     status_text = reactive("Ready")
     autoplay_on = reactive(True)
     is_buffering = reactive(False)
+    theme_name = reactive("Omarchy")
+
+    def _get_theme(self) -> ThemeColors:
+        if hasattr(self.app, "theme_manager"):
+            return self.app.theme_manager.current_theme
+        return ThemeColors()
 
     def compose(self) -> ComposeResult:
+        t = self._get_theme()
         with Horizontal(id="header_container"):
             yield Static(
-                "⚡ [bold #00e5ff]YTM[/][bold #bd93f9]usic[/] [dim #6272a4]TUI[/]",
+                f"⚡ [bold {t.primary}]YTM[/][bold {t.secondary}]usic[/] [dim {t.muted}]TUI[/]",
                 id="header_logo",
             )
             yield Static(
-                f"[bold #00e5ff]VIEW:[/] [bold #f8f8f2]{self.active_view}[/]",
+                f"[bold {t.primary}]VIEW:[/] [bold {t.foreground}]{self.active_view}[/]",
                 id="header_view_indicator",
             )
             with Horizontal(id="header_badges"):
                 yield Static(
-                    "[bold #50fa7b][GUEST MODE][/]",
+                    f"[bold {t.accent}][🎨 {self.theme_name}][/]",
+                    id="header_theme_badge",
+                    classes="badge",
+                )
+                yield Static(
+                    f"[bold {t.success}][GUEST MODE][/]",
                     id="header_guest_badge",
                     classes="badge",
                 )
                 yield Static(
-                    "[bold #bd93f9][AUTOPLAY: ON][/]",
+                    f"[bold {t.secondary}][AUTOPLAY: ON][/]",
                     id="header_autoplay_badge",
                     classes="badge",
                 )
                 yield Static(
-                    f"[#00e5ff][{self.status_text.upper()}][/]",
+                    f"[bold {t.primary}][{self.status_text.upper()}][/]",
                     id="header_status_badge",
                     classes="badge",
                 )
 
     def watch_active_view(self, new_view: str) -> None:
+        t = self._get_theme()
         try:
             lbl = self.query_one("#header_view_indicator", Static)
-            lbl.update(f"[bold #00e5ff]VIEW:[/] [bold #f8f8f2]{new_view}[/]")
+            lbl.update(f"[bold {t.primary}]VIEW:[/] [bold {t.foreground}]{new_view}[/]")
         except Exception:
             pass
 
     def watch_autoplay_on(self, on: bool) -> None:
+        t = self._get_theme()
         try:
             badge = self.query_one("#header_autoplay_badge", Static)
             if on:
-                badge.update("[bold #bd93f9][AUTOPLAY: ON][/]")
+                badge.update(f"[bold {t.secondary}][AUTOPLAY: ON][/]")
             else:
-                badge.update("[dim #6272a4][AUTOPLAY: OFF][/]")
+                badge.update(f"[dim {t.muted}][AUTOPLAY: OFF][/]")
         except Exception:
             pass
 
     def watch_status_text(self, text: str) -> None:
+        t = self._get_theme()
         try:
             badge = self.query_one("#header_status_badge", Static)
             if self.is_buffering:
-                badge.update("[bold #ff79c6][⏳ BUFFERING...][/]")
+                badge.update(f"[bold {t.accent}][⏳ BUFFERING...][/]")
             else:
-                badge.update(f"[bold #00e5ff][{text.upper()}][/]")
+                badge.update(f"[bold {t.primary}][{text.upper()}][/]")
         except Exception:
             pass
 
     def watch_is_buffering(self, buffering: bool) -> None:
         self.watch_status_text(self.status_text)
 
+    def watch_theme_name(self, name: str) -> None:
+        t = self._get_theme()
+        try:
+            badge = self.query_one("#header_theme_badge", Static)
+            badge.update(f"[bold {t.accent}][🎨 {name}][/]")
+        except Exception:
+            pass
+
+    def refresh_theme(self) -> None:
+        """Called on Omarchy theme change to refresh all badges."""
+        t = self._get_theme()
+        self.theme_name = t.name
+        try:
+            self.query_one("#header_logo", Static).update(
+                f"⚡ [bold {t.primary}]YTM[/][bold {t.secondary}]usic[/] [dim {t.muted}]TUI[/]"
+            )
+            self.watch_active_view(self.active_view)
+            self.watch_autoplay_on(self.autoplay_on)
+            self.watch_status_text(self.status_text)
+            self.watch_theme_name(t.name)
+            self.query_one("#header_guest_badge", Static).update(
+                f"[bold {t.success}][GUEST MODE][/]"
+            )
+        except Exception:
+            pass
+
 
 class SidebarNav(Widget):
     """Left navigation sidebar containing menu views and hotkey cheatsheet."""
 
+    def _get_theme(self) -> ThemeColors:
+        if hasattr(self.app, "theme_manager"):
+            return self.app.theme_manager.current_theme
+        return ThemeColors()
+
     def compose(self) -> ComposeResult:
+        t = self._get_theme()
         with Vertical(id="sidebar_container"):
-            yield Static("  [bold #bd93f9]DISCOVERY[/]", classes="nav_section_title")
+            yield Static(f"  [bold {t.secondary}]DISCOVERY[/]", id="nav_sec_discovery", classes="nav_section_title")
             with ListView(id="nav_list"):
                 yield ListItem(Static("🎵  Trending / Charts"), id="nav_trending")
                 yield ListItem(Static("📻  Song Radio & Recs"), id="nav_radio")
@@ -92,57 +141,66 @@ class SidebarNav(Widget):
                 yield ListItem(Static("🔍  Search"), id="nav_search")
                 yield ListItem(Static("📋  Current Queue"), id="nav_queue")
 
-            yield Static("  [bold #00e5ff]KEYBINDINGS[/]", classes="nav_section_title")
+            yield Static(f"  [bold {t.primary}]KEYBINDINGS[/]", id="nav_sec_keys", classes="nav_section_title")
             with Vertical(id="sidebar_help"):
-                yield Static("[bold #00e5ff]/[/]      Focus Search", classes="help_row")
-                yield Static("[bold #00e5ff]Space[/]  Play / Pause", classes="help_row")
-                yield Static("[bold #00e5ff]n / p[/]  Next / Prev Track", classes="help_row")
-                yield Static("[bold #00e5ff]j / k[/]  Navigate List", classes="help_row")
-                yield Static("[bold #00e5ff]Enter[/]  Play / Select", classes="help_row")
-                yield Static("[bold #00e5ff]a[/]      Append to Queue", classes="help_row")
-                yield Static("[bold #00e5ff]r[/]      Start Song Radio", classes="help_row")
-                yield Static("[bold #00e5ff]s / c[/]  Shuffle / Clear", classes="help_row")
-                yield Static("[bold #00e5ff]+ / -[/]  Volume Up / Down", classes="help_row")
-                yield Static("[bold #00e5ff]Tab[/]    Switch Focus", classes="help_row")
-                yield Static("[bold #00e5ff]q[/]      Safely Exit", classes="help_row")
+                yield Static(f"[bold {t.primary}]/[/]      Focus Search", classes="help_row")
+                yield Static(f"[bold {t.primary}]Space[/]  Play / Pause", classes="help_row")
+                yield Static(f"[bold {t.primary}]n / p[/]  Next / Prev Track", classes="help_row")
+                yield Static(f"[bold {t.primary}]j / k[/]  Navigate List", classes="help_row")
+                yield Static(f"[bold {t.primary}]Enter[/]  Play / Select", classes="help_row")
+                yield Static(f"[bold {t.primary}]a[/]      Append to Queue", classes="help_row")
+                yield Static(f"[bold {t.primary}]r[/]      Start Song Radio", classes="help_row")
+                yield Static(f"[bold {t.primary}]s / c[/]  Shuffle / Clear", classes="help_row")
+                yield Static(f"[bold {t.primary}]+ / -[/]  Volume Up / Down", classes="help_row")
+                yield Static(f"[bold {t.primary}]Tab[/]    Switch Focus", classes="help_row")
+                yield Static(f"[bold {t.primary}]q[/]      Safely Exit", classes="help_row")
+
+    def refresh_theme(self) -> None:
+        t = self._get_theme()
+        try:
+            self.query_one("#nav_sec_discovery", Static).update(f"  [bold {t.secondary}]DISCOVERY[/]")
+            self.query_one("#nav_sec_keys", Static).update(f"  [bold {t.primary}]KEYBINDINGS[/]")
+        except Exception:
+            pass
 
 
 class InteractiveSeekBar(Static):
     """
-    Unicode seek bar that supports mouse clicks and updates visually.
+    Unicode seek bar styled with Omarchy palette and mouse click support.
     Format: 01:42 ━━━━━━━━━━━━━━━━━━━━●────────────────────────────── 03:55
     """
 
     elapsed: reactive[float] = reactive(0.0)
     total: reactive[float] = reactive(0.0)
 
+    def _get_theme(self) -> ThemeColors:
+        if hasattr(self.app, "theme_manager"):
+            return self.app.theme_manager.current_theme
+        return ThemeColors()
+
     def on_click(self, event: events.Click) -> None:
         """Handle clicking anywhere along the seek bar."""
         if self.total <= 0:
             return
-        # Calculate percentage based on click x position relative to widget width
         width = self.size.width
         if width > 16:
-            # Leave room for timestamps on left and right (~7 chars each)
             bar_start = 8
             bar_end = width - 8
             bar_len = max(1, bar_end - bar_start)
             click_rel = max(0, min(bar_len, event.x - bar_start))
             percent = (click_rel / bar_len) * 100.0
-            # Post message or call player seek_percent
             if hasattr(self.app, "player"):
                 self.app.player.seek_percent(percent)
 
     def render(self) -> str:
+        t = self._get_theme()
         elapsed_str = format_seconds(self.elapsed)
         total_str = format_seconds(self.total)
 
         width = self.size.width
         if width < 30:
-            # Compact view for small width
-            return f"[#00e5ff]{elapsed_str}[/] / [dim]{total_str}[/]"
+            return f"[{t.primary}]{elapsed_str}[/] / [dim {t.muted}]{total_str}[/]"
 
-        # Reserve space for timestamps and margins: "00:00 " (6) and " 00:00" (6)
         bar_width = max(10, min(60, width - 18))
 
         if self.total > 0:
@@ -158,11 +216,11 @@ class InteractiveSeekBar(Static):
         empty_bar = "─" * empty_len
 
         return (
-            f"[bold #00e5ff]{elapsed_str}[/] "
-            f"[bold #00e5ff]{filled_bar}[/]"
-            f"[bold #ffffff]{knob}[/]"
-            f"[#27272a]{empty_bar}[/] "
-            f"[dim #6272a4]{total_str}[/]"
+            f"[bold {t.primary}]{elapsed_str}[/] "
+            f"[bold {t.primary}]{filled_bar}[/]"
+            f"[bold {t.accent}]{knob}[/]"
+            f"[{t.border}]{empty_bar}[/] "
+            f"[dim {t.muted}]{total_str}[/]"
         )
 
 
@@ -181,14 +239,20 @@ class BottomPlayerBar(Widget):
     autoplay: reactive[bool] = reactive(True)
     queue_len: reactive[int] = reactive(0)
 
+    def _get_theme(self) -> ThemeColors:
+        if hasattr(self.app, "theme_manager"):
+            return self.app.theme_manager.current_theme
+        return ThemeColors()
+
     def compose(self) -> ComposeResult:
+        t = self._get_theme()
         with Vertical(id="player_bar_container"):
             # Row 1: Track Title, Artist, Album, Quality, Autoplay
             with Horizontal(id="player_track_row"):
-                yield Static("🎵  [dim #6272a4]No track playing — Select a song and press Enter[/]", id="player_title_info")
+                yield Static(f"🎵  [dim {t.muted}]No track playing — Select a song and press Enter[/]", id="player_title_info")
                 with Horizontal(id="player_meta_badges"):
-                    yield Static(f"[bold #00e5ff border][{self.quality}][/]", id="player_quality_badge")
-                    yield Static("[bold #bd93f9][AUTOPLAY: ON][/]", id="player_autoplay_badge")
+                    yield Static(f"[bold {t.primary} border][{self.quality}][/]", id="player_quality_badge")
+                    yield Static(f"[bold {t.secondary}][AUTOPLAY: ON][/]", id="player_autoplay_badge")
 
             # Row 2: Dynamic Unicode Seek Bar
             with Container(id="player_seek_container"):
@@ -196,16 +260,17 @@ class BottomPlayerBar(Widget):
 
             # Row 3: Controls State, Volume meter, Queue count, Quick Hotkeys
             with Horizontal(id="player_controls_row"):
-                yield Static("[dim #6272a4][⏹ STOPPED][/]", id="player_state_badge")
+                yield Static(f"[dim {t.muted}][⏹ STOPPED][/]", id="player_state_badge")
                 yield Static(self._format_volume_meter(self.volume), id="player_volume_badge")
-                yield Static(f"[bold #00e5ff][QUEUE: {self.queue_len} tracks][/]", id="player_queue_badge")
+                yield Static(f"[bold {t.primary}][QUEUE: {self.queue_len} tracks][/]", id="player_queue_badge")
                 yield Static(
-                    "[dim #6272a4][Space] Pause  [n] Next  [p] Prev  [+/-] Vol  [a] Add  [r] Radio  [s] Shuffle[/]",
+                    f"[dim {t.muted}][Space] Pause  [n] Next  [p] Prev  [+/-] Vol  [a] Add  [r] Radio  [s] Shuffle[/]",
                     id="player_hotkeys_hint",
                 )
 
     def _format_volume_meter(self, vol: int) -> str:
         """Create volume meter with Unicode block glyphs."""
+        t = self._get_theme()
         blocks = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
         total_blocks = 8
         active = int(round((vol / 100.0) * total_blocks))
@@ -215,32 +280,33 @@ class BottomPlayerBar(Widget):
                 meter += blocks[min(i, len(blocks) - 1)]
             else:
                 meter += " "
-        return f"[bold #bd93f9][VOL: {vol}% {meter}][/]"
+        return f"[bold {t.secondary}][VOL: {vol}% {meter}][/]"
 
     def update_track(self, track: Optional[Track], quality: str, autoplay: bool) -> None:
         self.track = track
         self.quality = quality
         self.autoplay = autoplay
+        t = self._get_theme()
 
         try:
             title_lbl = self.query_one("#player_title_info", Static)
             if track:
                 title_lbl.update(
-                    f"🎵  [bold #00e5ff]{track.title}[/]  [dim #6272a4]•[/]  "
-                    f"[bold #bd93f9]{track.artist}[/]  "
-                    f"[dim #6272a4]•  {track.album or 'Single'}[/]"
+                    f"🎵  [bold {t.accent}]{track.title}[/]  [dim {t.muted}]•[/]  "
+                    f"[bold {t.secondary}]{track.artist}[/]  "
+                    f"[dim {t.muted}]•  {track.album or 'Single'}[/]"
                 )
             else:
-                title_lbl.update("🎵  [dim #6272a4]No track playing — Select a song and press Enter[/]")
+                title_lbl.update(f"🎵  [dim {t.muted}]No track playing — Select a song and press Enter[/]")
 
             q_badge = self.query_one("#player_quality_badge", Static)
-            q_badge.update(f"[bold #00e5ff][{quality}][/]")
+            q_badge.update(f"[bold {t.primary}][{quality}][/]")
 
             ap_badge = self.query_one("#player_autoplay_badge", Static)
             if autoplay:
-                ap_badge.update("[bold #bd93f9][AUTOPLAY: ON][/]")
+                ap_badge.update(f"[bold {t.secondary}][AUTOPLAY: ON][/]")
             else:
-                ap_badge.update("[dim #6272a4][AUTOPLAY: OFF][/]")
+                ap_badge.update(f"[dim {t.muted}][AUTOPLAY: OFF][/]")
         except Exception:
             pass
 
@@ -265,22 +331,39 @@ class BottomPlayerBar(Widget):
         self.is_buffering = is_buffering
         self.volume = volume
         self.queue_len = queue_len
+        t = self._get_theme()
 
         try:
             state_badge = self.query_one("#player_state_badge", Static)
             if is_buffering:
-                state_badge.update("[bold #ff79c6][⏳ BUFFERING][/]")
+                state_badge.update(f"[bold {t.accent}][⏳ BUFFERING][/]")
             elif is_paused:
-                state_badge.update("[bold #f1fa8c][⏸ PAUSED][/]")
+                state_badge.update(f"[bold {t.warning}][⏸ PAUSED][/]")
             elif is_playing:
-                state_badge.update("[bold #50fa7b][▶ PLAYING][/]")
+                state_badge.update(f"[bold {t.success}][▶ PLAYING][/]")
             else:
-                state_badge.update("[dim #6272a4][⏹ STOPPED][/]")
+                state_badge.update(f"[dim {t.muted}][⏹ STOPPED][/]")
 
             vol_badge = self.query_one("#player_volume_badge", Static)
             vol_badge.update(self._format_volume_meter(volume))
 
             q_badge = self.query_one("#player_queue_badge", Static)
-            q_badge.update(f"[bold #00e5ff][QUEUE: {queue_len} tracks][/]")
+            q_badge.update(f"[bold {t.primary}][QUEUE: {queue_len} tracks][/]")
+        except Exception:
+            pass
+
+    def refresh_theme(self) -> None:
+        """Refresh bar colors on theme change."""
+        self.update_track(self.track, self.quality, self.autoplay)
+        self.update_state(
+            self.is_playing,
+            self.is_paused,
+            self.is_buffering,
+            self.volume,
+            self.queue_len,
+        )
+        try:
+            bar = self.query_one("#player_seek_bar", InteractiveSeekBar)
+            bar.refresh()
         except Exception:
             pass

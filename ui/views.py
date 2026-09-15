@@ -1,8 +1,9 @@
 """
 ui/views.py - Screens/Views for Trending, Radio, Moods & Playlists, Playlist Detail, Search, and Queue.
+Refined with Omarchy theme color integration.
 """
 
-from typing import Optional, List, Dict, Any, Callable
+from typing import Optional, List, Dict, Any
 from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import (
@@ -12,15 +13,14 @@ from textual.widgets import (
     ListItem,
     Input,
     Button,
-    Label,
     TabbedContent,
     TabPane,
 )
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
-from textual.reactive import reactive
+from textual.containers import Container, Horizontal, Vertical
 from textual.message import Message
 
 from api import Track, Playlist, Category, format_seconds
+from theme import ThemeColors
 
 
 # Custom UI Event Messages
@@ -76,6 +76,12 @@ class ExecuteSearchMsg(Message):
         self.filter_type = filter_type
 
 
+def _theme(widget: Widget) -> ThemeColors:
+    if hasattr(widget.app, "theme_manager"):
+        return widget.app.theme_manager.current_theme
+    return ThemeColors()
+
+
 # -----------------------------------------------------------------------------
 # 1. Trending View
 # -----------------------------------------------------------------------------
@@ -88,9 +94,11 @@ class TrendingView(Widget):
         self.playlists: List[Playlist] = []
 
     def compose(self) -> ComposeResult:
+        t = _theme(self)
         with Vertical(classes="view_content_container"):
             yield Static(
-                "🔥  [bold #00e5ff]Trending & Global Charts[/]  [dim #6272a4]— Top songs updated daily[/]",
+                f"🔥  [bold {t.primary}]Trending & Global Charts[/]  [dim {t.muted}]— Top songs updated daily[/]",
+                id="trending_banner",
                 classes="view_banner",
             )
             with TabbedContent(initial="tab_trending_tracks", id="trending_tabs"):
@@ -172,6 +180,15 @@ class TrendingView(Widget):
                 p = self.playlists[event.cursor_row]
                 self.post_message(OpenPlaylistMsg(p))
 
+    def refresh_theme(self) -> None:
+        t = _theme(self)
+        try:
+            self.query_one("#trending_banner", Static).update(
+                f"🔥  [bold {t.primary}]Trending & Global Charts[/]  [dim {t.muted}]— Top songs updated daily[/]"
+            )
+        except Exception:
+            pass
+
 
 # -----------------------------------------------------------------------------
 # 2. Radio View
@@ -185,14 +202,15 @@ class RadioView(Widget):
         self.seed_track: Optional[Track] = None
 
     def compose(self) -> ComposeResult:
+        t = _theme(self)
         with Vertical(classes="view_content_container"):
             with Container(id="radio_seed_card"):
                 yield Static(
-                    "📻  [bold #00e5ff]Song Radio & Algorithmic Recommendations[/]",
+                    f"📻  [bold {t.primary}]Song Radio & Algorithmic Recommendations[/]",
                     id="radio_title",
                 )
                 yield Static(
-                    "[dim #6272a4]No active seed track. Highlight any song and press [bold #00e5ff][r][/] to launch infinite radio.[/]",
+                    f"[dim {t.muted}]No active seed track. Highlight any song and press [bold {t.primary}][r][/] to launch infinite radio.[/]",
                     id="radio_seed_info",
                 )
                 with Horizontal(id="radio_action_buttons"):
@@ -208,27 +226,28 @@ class RadioView(Widget):
     def set_radio_tracks(self, seed: Track, tracks: List[Track]) -> None:
         self.seed_track = seed
         self.tracks = tracks
+        t = _theme(self)
 
         try:
             info = self.query_one("#radio_seed_info", Static)
             info.update(
-                f"Generated from: [bold #00e5ff]{seed.title}[/]  "
-                f"[dim #6272a4]by[/]  [bold #bd93f9]{seed.artist}[/]  "
-                f"[dim #6272a4]({len(tracks)} related recommendations)[/]"
+                f"Generated from: [bold {t.accent}]{seed.title}[/]  "
+                f"[dim {t.muted}]by[/]  [bold {t.secondary}]{seed.artist}[/]  "
+                f"[dim {t.muted}]({len(tracks)} related recommendations)[/]"
             )
         except Exception:
             pass
 
         table = self.query_one("#radio_tracks_table", DataTable)
         table.clear()
-        for idx, t in enumerate(tracks, 1):
+        for idx, tr in enumerate(tracks, 1):
             table.add_row(
                 str(idx),
-                t.title,
-                t.artist,
-                t.album or "Single",
-                t.display_duration,
-                key=f"radio_{t.id}_{idx}",
+                tr.title,
+                tr.artist,
+                tr.album or "Single",
+                tr.display_duration,
+                key=f"radio_{tr.id}_{idx}",
             )
 
     def get_selected_track(self) -> Optional[Track]:
@@ -242,16 +261,27 @@ class RadioView(Widget):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if 0 <= event.cursor_row < len(self.tracks):
-            t = self.tracks[event.cursor_row]
+            tr = self.tracks[event.cursor_row]
             remaining = self.tracks[event.cursor_row + 1 :]
-            self.post_message(PlayTrackMsg(t, remaining))
+            self.post_message(PlayTrackMsg(tr, remaining))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_radio_regen" and self.seed_track:
             self.post_message(StartRadioMsg(self.seed_track))
         elif event.button.id == "btn_radio_queue_all" and self.tracks:
-            for t in self.tracks:
-                self.post_message(QueueTrackMsg(t))
+            for tr in self.tracks:
+                self.post_message(QueueTrackMsg(tr))
+
+    def refresh_theme(self) -> None:
+        t = _theme(self)
+        try:
+            self.query_one("#radio_title", Static).update(
+                f"📻  [bold {t.primary}]Song Radio & Algorithmic Recommendations[/]"
+            )
+            if self.seed_track:
+                self.set_radio_tracks(self.seed_track, self.tracks)
+        except Exception:
+            pass
 
 
 # -----------------------------------------------------------------------------
@@ -266,18 +296,20 @@ class MoodsPlaylistsView(Widget):
         self.current_playlists: List[Playlist] = []
 
     def compose(self) -> ComposeResult:
+        t = _theme(self)
         with Vertical(classes="view_content_container"):
             yield Static(
-                "📂  [bold #00e5ff]Moods & Curated Playlists[/]  [dim #6272a4]— Browse curated moods, moments and genres[/]",
+                f"📂  [bold {t.primary}]Moods & Curated Playlists[/]  [dim {t.muted}]— Browse curated moods, moments and genres[/]",
+                id="moods_banner",
                 classes="view_banner",
             )
             with Horizontal(id="moods_split_container"):
                 with Vertical(id="moods_left_pane"):
-                    yield Static("[bold #bd93f9]CATEGORIES[/]", classes="pane_title")
+                    yield Static(f"[bold {t.secondary}]CATEGORIES[/]", id="moods_cat_header", classes="pane_title")
                     yield ListView(id="categories_list")
                 with Vertical(id="moods_right_pane"):
                     yield Static(
-                        "[bold #00e5ff]CURATED PLAYLISTS[/]  [dim #6272a4]— Press Enter to inspect, [a] to queue[/]",
+                        f"[bold {t.primary}]CURATED PLAYLISTS[/]  [dim {t.muted}]— Press Enter to inspect[/]",
                         classes="pane_title",
                         id="moods_playlists_title",
                     )
@@ -300,11 +332,12 @@ class MoodsPlaylistsView(Widget):
 
     def populate_playlists(self, category_name: str, playlists: List[Playlist]) -> None:
         self.current_playlists = playlists
+        t = _theme(self)
         try:
             title_lbl = self.query_one("#moods_playlists_title", Static)
             title_lbl.update(
-                f"[bold #00e5ff]{category_name.upper()} PLAYLISTS[/]  "
-                f"[dim #6272a4]({len(playlists)} found) — Press Enter to inspect[/]"
+                f"[bold {t.primary}]{category_name.upper()} PLAYLISTS[/]  "
+                f"[dim {t.muted}]({len(playlists)} found) — Press Enter to inspect[/]"
             )
         except Exception:
             pass
@@ -349,6 +382,16 @@ class MoodsPlaylistsView(Widget):
             pass
         return None
 
+    def refresh_theme(self) -> None:
+        t = _theme(self)
+        try:
+            self.query_one("#moods_banner", Static).update(
+                f"📂  [bold {t.primary}]Moods & Curated Playlists[/]  [dim {t.muted}]— Browse curated moods, moments and genres[/]"
+            )
+            self.query_one("#moods_cat_header", Static).update(f"[bold {t.secondary}]CATEGORIES[/]")
+        except Exception:
+            pass
+
 
 # -----------------------------------------------------------------------------
 # 4. Playlist Detail View
@@ -362,14 +405,15 @@ class PlaylistDetailView(Widget):
         self.tracks: List[Track] = []
 
     def compose(self) -> ComposeResult:
+        t = _theme(self)
         with Vertical(classes="view_content_container"):
             with Container(id="playlist_header_card"):
                 yield Static(
-                    "📂  [bold #00e5ff]Loading Playlist...[/]",
+                    f"📂  [bold {t.primary}]Loading Playlist...[/]",
                     id="pl_detail_title",
                 )
                 yield Static(
-                    "[dim #6272a4]Fetching tracks and creator information...[/]",
+                    f"[dim {t.muted}]Fetching tracks and creator information...[/]",
                     id="pl_detail_subtitle",
                 )
                 with Horizontal(id="pl_detail_buttons"):
@@ -386,31 +430,32 @@ class PlaylistDetailView(Widget):
     def set_playlist(self, playlist: Playlist, tracks: List[Track]) -> None:
         self.playlist = playlist
         self.tracks = tracks
+        t = _theme(self)
 
         try:
             title_lbl = self.query_one("#pl_detail_title", Static)
-            title_lbl.update(f"📂  [bold #00e5ff]{playlist.title}[/]")
+            title_lbl.update(f"📂  [bold {t.primary}]{playlist.title}[/]")
 
             desc = playlist.description.split("\n")[0] if playlist.description else ""
             subtitle = self.query_one("#pl_detail_subtitle", Static)
             subtitle.update(
-                f"[bold #bd93f9]{playlist.author}[/]  [dim #6272a4]•[/]  "
-                f"[bold #f8f8f2]{len(tracks)} tracks[/]  "
-                f"[dim #6272a4]•  {desc}[/]"
+                f"[bold {t.secondary}]{playlist.author}[/]  [dim {t.muted}]•[/]  "
+                f"[bold {t.foreground}]{len(tracks)} tracks[/]  "
+                f"[dim {t.muted}]•  {desc}[/]"
             )
         except Exception:
             pass
 
         table = self.query_one("#pl_detail_table", DataTable)
         table.clear()
-        for idx, t in enumerate(tracks, 1):
+        for idx, tr in enumerate(tracks, 1):
             table.add_row(
                 str(idx),
-                t.title,
-                t.artist,
-                t.album or "Single",
-                t.display_duration,
-                key=f"plt_{t.id}_{idx}",
+                tr.title,
+                tr.artist,
+                tr.album or "Single",
+                tr.display_duration,
+                key=f"plt_{tr.id}_{idx}",
             )
 
     def get_selected_track(self) -> Optional[Track]:
@@ -424,20 +469,23 @@ class PlaylistDetailView(Widget):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if 0 <= event.cursor_row < len(self.tracks):
-            t = self.tracks[event.cursor_row]
+            tr = self.tracks[event.cursor_row]
             remaining = self.tracks[event.cursor_row + 1 :]
-            self.post_message(PlayTrackMsg(t, remaining))
+            self.post_message(PlayTrackMsg(tr, remaining))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_pl_play_all" and self.tracks:
             self.post_message(PlayTrackMsg(self.tracks[0], self.tracks[1:]))
         elif event.button.id == "btn_pl_queue_all" and self.tracks:
-            for t in self.tracks:
-                self.post_message(QueueTrackMsg(t))
+            for tr in self.tracks:
+                self.post_message(QueueTrackMsg(tr))
         elif event.button.id == "btn_pl_back":
-            # Switch to previous view via app method
             if hasattr(self.app, "switch_to_previous_view"):
                 self.app.switch_to_previous_view()
+
+    def refresh_theme(self) -> None:
+        if self.playlist:
+            self.set_playlist(self.playlist, self.tracks)
 
 
 # -----------------------------------------------------------------------------
@@ -452,9 +500,11 @@ class SearchView(Widget):
         self.playlist_results: List[Playlist] = []
 
     def compose(self) -> ComposeResult:
+        t = _theme(self)
         with Vertical(classes="view_content_container"):
             yield Static(
-                "🔍  [bold #00e5ff]Search YouTube Music[/]  [dim #6272a4]— Zero auth query discovery[/]",
+                f"🔍  [bold {t.primary}]Search YouTube Music[/]  [dim {t.muted}]— Zero auth query discovery[/]",
+                id="search_banner",
                 classes="view_banner",
             )
             with Container(id="search_bar_container"):
@@ -486,14 +536,14 @@ class SearchView(Widget):
 
         s_table = self.query_one("#search_songs_table", DataTable)
         s_table.clear()
-        for idx, t in enumerate(songs, 1):
+        for idx, tr in enumerate(songs, 1):
             s_table.add_row(
                 str(idx),
-                t.title,
-                t.artist,
-                t.album or "Single",
-                t.display_duration,
-                key=f"s_{t.id}_{idx}",
+                tr.title,
+                tr.artist,
+                tr.album or "Single",
+                tr.display_duration,
+                key=f"s_{tr.id}_{idx}",
             )
 
         p_table = self.query_one("#search_playlists_table", DataTable)
@@ -544,13 +594,22 @@ class SearchView(Widget):
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.data_table.id == "search_songs_table":
             if 0 <= event.cursor_row < len(self.song_results):
-                t = self.song_results[event.cursor_row]
+                tr = self.song_results[event.cursor_row]
                 remaining = self.song_results[event.cursor_row + 1 :]
-                self.post_message(PlayTrackMsg(t, remaining))
+                self.post_message(PlayTrackMsg(tr, remaining))
         elif event.data_table.id == "search_playlists_table":
             if 0 <= event.cursor_row < len(self.playlist_results):
                 p = self.playlist_results[event.cursor_row]
                 self.post_message(OpenPlaylistMsg(p))
+
+    def refresh_theme(self) -> None:
+        t = _theme(self)
+        try:
+            self.query_one("#search_banner", Static).update(
+                f"🔍  [bold {t.primary}]Search YouTube Music[/]  [dim {t.muted}]— Zero auth query discovery[/]"
+            )
+        except Exception:
+            pass
 
 
 # -----------------------------------------------------------------------------
@@ -564,14 +623,15 @@ class QueueView(Widget):
         self.queue_tracks: List[Track] = []
 
     def compose(self) -> ComposeResult:
+        t = _theme(self)
         with Vertical(classes="view_content_container"):
             with Container(id="queue_header_card"):
                 yield Static(
-                    "📋  [bold #00e5ff]Current Playback Queue[/]",
+                    f"📋  [bold {t.primary}]Current Playback Queue[/]",
                     id="queue_title",
                 )
                 yield Static(
-                    "[dim #6272a4]Manage tracks, shuffle order, or jump directly to any queued song.[/]",
+                    f"[dim {t.muted}]Manage tracks, shuffle order, or jump directly to any queued song.[/]",
                     id="queue_info",
                 )
                 with Horizontal(id="queue_action_buttons"):
@@ -587,32 +647,35 @@ class QueueView(Widget):
 
     def set_queue(self, queue: List[Track]) -> None:
         self.queue_tracks = queue
+        t = _theme(self)
         try:
             info = self.query_one("#queue_info", Static)
             if queue:
-                total_sec = sum(t.duration_seconds for t in queue if t.duration_seconds)
+                total_sec = sum(tr.duration_seconds for tr in queue if tr.duration_seconds)
                 total_time_str = f" • Approx {format_seconds(total_sec)}" if total_sec else ""
-                info.update(f"[bold #f8f8f2]{len(queue)} tracks queued{total_time_str}[/]  [dim #6272a4]— Press Enter to play from queue[/]")
+                info.update(
+                    f"[bold {t.foreground}]{len(queue)} tracks queued{total_time_str}[/]  "
+                    f"[dim {t.muted}]— Press Enter to play from queue[/]"
+                )
             else:
-                info.update("[dim #6272a4]Queue is currently empty. Add tracks from Trending, Playlists, or Search![/]")
+                info.update(f"[dim {t.muted}]Queue is currently empty. Add tracks from Trending, Playlists, or Search![/]")
         except Exception:
             pass
 
         table = self.query_one("#queue_table", DataTable)
         table.clear()
-        for idx, t in enumerate(queue, 1):
+        for idx, tr in enumerate(queue, 1):
             table.add_row(
                 str(idx),
-                t.title,
-                t.artist,
-                t.album or "Single",
-                t.display_duration,
-                key=f"q_{t.id}_{idx}",
+                tr.title,
+                tr.artist,
+                tr.album or "Single",
+                tr.display_duration,
+                key=f"q_{tr.id}_{idx}",
             )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if 0 <= event.cursor_row < len(self.queue_tracks):
-            # Play from queue index
             if hasattr(self.app, "player"):
                 self.app.player.play_from_queue(event.cursor_row)
 
@@ -628,3 +691,13 @@ class QueueView(Widget):
             table = self.query_one("#queue_table", DataTable)
             if 0 <= table.cursor_row < len(self.queue_tracks):
                 self.app.player.remove_from_queue(table.cursor_row)
+
+    def refresh_theme(self) -> None:
+        t = _theme(self)
+        try:
+            self.query_one("#queue_title", Static).update(
+                f"📋  [bold {t.primary}]Current Playback Queue[/]"
+            )
+            self.set_queue(self.queue_tracks)
+        except Exception:
+            pass
