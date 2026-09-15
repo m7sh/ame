@@ -1,0 +1,4 @@
+textual>=0.80.0
+ytmusicapi>=1.10.0
+yt-dlp>=2024.0.0
+requests>=2.31.0

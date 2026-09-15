@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Launcher script for YouTube Music TUI Player
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$DIR/.venv" ]; then
+    exec "$DIR/.venv/bin/python" "$DIR/app.py" "$@"
+else
+    exec python3 "$DIR/app.py" "$@"
+fi
