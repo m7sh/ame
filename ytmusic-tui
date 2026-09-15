@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # Launcher script for YouTube Music TUI Player
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -d "$DIR/.venv" ]; then
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+cd "$DIR" || exit 1
+
+if [ -x "$DIR/.venv/bin/python" ]; then
     exec "$DIR/.venv/bin/python" "$DIR/app.py" "$@"
 else
     exec python3 "$DIR/app.py" "$@"
