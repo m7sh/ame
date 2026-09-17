@@ -1,94 +1,124 @@
-# ⚡ YouTube Music TUI Player
+# ytmusic-tui
 
-> **Modern, Standalone, and Beautiful Terminal Music Player for YouTube Music.**
-> Requires **ZERO authentication or login** (operates in 100% Guest Mode).
+> A minimal, keyboard-driven YouTube Music player for the terminal.
+> Runs entirely in **guest mode** — no login, cookies or API keys.
 
----
-
-## ✨ Features & Architecture
-
-- 🛡️ **Zero Login / Guest Mode**: Initialized via `YTMusic()` with no Google credentials, cookies, or auth JSON required.
-- 🎨 **Dark Cyberpunk / Dracula Aesthetic**:
-  - Background: `#121212`, Surfaces: `#1e1e24`, Accents: Cyan `#00e5ff` & Purple `#bd93f9`, Zinc borders `#27272a`.
-- ⚡ **Asynchronous & 60fps Responsive**: All discovery searches, playlist retrievals, and stream extractions run in dedicated background worker threads (`@work(exclusive=True, thread=True)`).
-- 🎵 **High-Fidelity Audio Playback**:
-  - Stream URLs extracted on the fly via `yt-dlp` (`bestaudio`, Opus / AAC) with in-memory caching.
-  - Headless background `mpv` worker daemon communicating through JSON UNIX domain sockets (`--no-video --idle --input-ipc-server`).
-- 📻 **Infinite Radio & Continuous Autoplay**:
-  - Start an algorithmic radio station from any highlighted song (`get_watch_playlist`).
-  - Continuous Autoplay keeps your music streaming indefinitely by automatically fetching recommendations based on the last played song when your queue ends.
-- 📂 **Moods & Curated Playlists**:
-  - Explore mood categories (Chill, Workout, Focus, Gaming, Romance, Energize) and musical genres (Dance & Electronic, Rock, Pop, Hip-Hop, Classical).
-  - Inspect any playlist to view track count, creator metadata, full track list, with **Play All** or **Queue All**.
-- 🔍 **Instant Search**:
-  - Full-text search across songs and public community playlists with instant tabbed results.
-- 📋 **Full Queue Control**:
-  - Append (`a`), Play Next, Shuffle Queue (`s`), Clear Queue (`c`), and Jump to any queued track.
+ytmusic-tui is built with [Textual](https://textual.textualize.io/), uses
+`ytmusicapi` for discovery, `yt-dlp` to resolve audio streams and a headless
+`mpv` daemon for playback. The interface is deliberately sparse: one tab bar,
+one list, and a slim player — nothing else competing for attention.
 
 ---
 
-## 🕹️ Keyboard Shortcuts (Vim-Inspired)
+## Design
+
+- **Terminal-native chrome** — no emoji, no boxes-within-boxes. Unicode
+  rules, block glyphs and reverse-style selection only.
+- **One screen at a time** — the sidebar and status badges are gone; views
+  are switched from a single tab line or with `1`–`5`.
+- **Two-line player** — now-playing and time, then a full-width clickable
+  seek bar.
+- **Help on demand** — press `?` for the keybinding overlay instead of
+  leaving a permanent cheat sheet on screen.
+- **Live Omarchy theme sync** — colors are injected as native Textual theme
+  variables, so switching your desktop theme restyles the app instantly with
+  no flicker and no file rewrites.
+
+---
+
+## Features
+
+- Zero authentication / guest mode (`YTMusic()` with no credentials).
+- Trending charts, mood and genre browsing, search and song radio.
+- Infinite radio plus continuous autoplay when the queue runs dry.
+- Full queue control: append, play-all, shuffle, remove and clear.
+- Asynchronous discovery and stream resolution — the UI never blocks.
+- Headless `mpv` playback over a JSON IPC socket with stream prefetching.
+
+---
+
+## Keyboard
 
 | Key | Action |
 | --- | --- |
-| `/` | Focus Search Input |
-| `Space` | Toggle Play / Pause |
-| `n` | Next Track in Queue |
-| `p` | Previous Track (or restart current if > 3s) |
-| `j` / `Down` | Navigate down through lists and tables |
-| `k` / `Up` | Navigate up through lists and tables |
-| `Enter` | Play highlighted track immediately / Open playlist |
-| `a` | Append highlighted track or playlist to queue |
-| `r` | Start algorithmic song radio from highlighted track |
-| `Tab` | Switch focus between Sidebar and Main Content |
-| `+` / `=` | Increase volume (+5%) |
-| `-` / `_` | Decrease volume (-5%) |
-| `←` / `→` | Seek backward / forward 5 seconds |
-| `s` | Shuffle remaining queue |
-| `c` | Clear active queue |
-| `Esc` | Return to previous view or defocus search bar |
-| `1` – `5` | Quick switch view (1: Trending, 2: Radio, 3: Moods, 4: Search, 5: Queue) |
-| `t` | Sync / reload theme from active Omarchy desktop theme |
-| `q` | Safely stop audio, clean IPC sockets/processes, and exit |
+| `space` | play / pause |
+| `n` / `p` | next / previous track |
+| `←` / `→` | seek −5s / +5s |
+| `+` / `-` | volume up / down |
+| `j` / `k` | move down / up |
+| `enter` | play highlighted item |
+| `a` | append highlighted track or playlist to the queue |
+| `A` | queue every track in the current view |
+| `P` | play every track in the current view |
+| `r` | start a song radio from the highlighted track |
+| `d` | remove the highlighted track from the queue |
+| `s` / `c` | shuffle / clear the queue |
+| `/` | focus search |
+| `1` – `5` | jump to trending / radio / moods / search / queue |
+| `esc` | back or close overlay |
+| `t` | re-sync the Omarchy theme |
+| `?` | toggle the keybinding overlay |
+| `q` | quit (stops audio and cleans up sockets) |
 
 ---
 
-## 📁 Project Structure
+## Installation
+
+Requires `mpv` and `yt-dlp` on your `PATH`:
+
+```bash
+sudo pacman -S mpv yt-dlp     # Arch / Omarchy
+sudo apt install mpv yt-dlp   # Debian / Ubuntu
+```
+
+Then install the Python dependencies and run:
+
+```bash
+git clone https://github.com/m7sh/ytmusic-tui.git
+cd ytmusic-tui
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+./ytmusic-tui
+```
+
+`ytmusic-tui` is a small launcher that uses `.venv` when present and falls
+back to the system `python3`. Symlink it into `~/.local/bin` to run it from
+anywhere:
+
+```bash
+ln -sf "$PWD/ytmusic-tui" ~/.local/bin/ytmusic-tui
+```
+
+---
+
+## Project layout
 
 ```
 ytmusic-tui/
-├── app.py              # Main Textual App class, event handlers, and keybindings
-├── api.py              # Async-wrapped ytmusicapi guest client and yt-dlp stream resolver
-├── player.py           # Headless MPV IPC client, audio state machine, and queue manager
-├── styles.tcss         # Modern Cyberpunk/Dracula stylesheet (layouts, themes, colors)
-├── requirements.txt    # Project dependencies (textual, ytmusicapi, yt-dlp, requests)
-├── ytmusic-tui         # Direct executable launcher script
+├── app.py            # Textual app: layout, bindings, workers, theme sync
+├── api.py            # Guest-mode ytmusicapi client + yt-dlp stream resolver
+├── player.py         # Headless mpv IPC client, queue state machine
+├── theme.py          # Omarchy palette detection -> native Textual Theme
+├── styles.tcss       # Static stylesheet driven by theme CSS variables
+├── requirements.txt
+├── ytmusic-tui       # Launcher script
 └── ui/
-    ├── __init__.py     # UI package module
-    ├── views.py        # Views for Trending, Radio, Moods, Playlist Detail, Search, Queue
-    └── widgets.py      # Sticky bottom player bar, Unicode seek bar, header, and sidebar
+    ├── widgets.py    # TopBar, SeekBar, PlayerBar, HelpScreen
+    └── views.py      # Trending, Radio, Moods, Playlist, Search, Queue
 ```
 
 ---
 
-## 🚀 Installation & Running
+## How theme sync works
 
-### Dependencies
-Ensure `mpv` and `yt-dlp` are installed on your Linux system:
-```bash
-sudo pacman -S mpv yt-dlp   # Arch Linux / Omarchy
-# or
-sudo apt install mpv yt-dlp # Ubuntu / Debian
-```
+At startup `theme.py` reads
+`~/.local/state/omarchy/current/theme/colors.toml`, normalizes the palette
+and registers it as a Textual `Theme` with custom variables (`$ytm-accent`,
+`$ytm-muted`, …). `styles.tcss` only ever refers to those variables. When the
+file changes, the app registers a fresh theme and reassigns it — Textual
+re-applies every variable live, so nothing on disk is touched and the
+interface never re-parses a stylesheet mid-session.
 
-### Quick Run
-Since `ytmusic-tui` is linked to your `~/.local/bin`, you can launch it from any terminal:
-```bash
-ytmusic-tui
-```
+## License
 
-Or run directly from this directory:
-```bash
-source .venv/bin/activate
-python app.py
-```
+MIT

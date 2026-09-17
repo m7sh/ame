@@ -1,27 +1,23 @@
 """
-app.py - Main Textual Application for YouTube Music TUI.
+app.py - Main Textual application for ytmusic-tui.
 
-Modern, Unauthenticated YouTube Music TUI Player.
-Built with Textual, ytmusicapi (guest mode), yt-dlp, and headless mpv IPC.
+An unauthenticated, keyboard-driven YouTube Music player for the terminal.
+Built with Textual, ytmusicapi (guest mode), yt-dlp and a headless mpv daemon.
 """
 
-import os
-import sys
 import threading
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 from textual.app import App, ComposeResult
-from textual.widgets import ContentSwitcher, Input, ListView, DataTable, Static
-from textual.containers import Container, Horizontal, Vertical
 from textual.binding import Binding
+from textual.widgets import ContentSwitcher, Input
 from textual import work
 from textual import events
 
-from pathlib import Path
 from api import YTMusicAPI, Track, Playlist, Category
 from player import MPVPlayer
 from theme import OmarchyThemeManager, ThemeColors
-from ui.widgets import HeaderBar, SidebarNav, BottomPlayerBar
+from ui.widgets import TopBar, PlayerBar, HelpScreen
 from ui.views import (
     TrendingView,
     RadioView,
@@ -33,18 +29,17 @@ from ui.views import (
     QueueTrackMsg,
     StartRadioMsg,
     OpenPlaylistMsg,
-    QueuePlaylistMsg,
     SelectCategoryMsg,
     ExecuteSearchMsg,
 )
 
 
 class YTMusicApp(App):
-    """Modern, Unauthenticated YouTube Music TUI Player with Omarchy Theme Sync."""
+    """Minimal, terminal-native YouTube Music player with Omarchy theme sync."""
 
     CSS_PATH = "styles.tcss"
-    TITLE = "YouTube Music TUI"
-    SUB_TITLE = "Guest Mode • Omarchy Synced"
+    TITLE = "ytmusic-tui"
+    SUB_TITLE = "guest mode"
 
     BINDINGS = [
         Binding("slash", "focus_search", "Search", show=False),
@@ -56,6 +51,9 @@ class YTMusicApp(App):
         Binding("down", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False),
         Binding("a", "queue_selected", "Append", show=False),
+        Binding("A", "queue_all", "Queue All", show=False),
+        Binding("P", "play_all", "Play All", show=False),
+        Binding("d", "remove_selected", "Remove", show=False),
         Binding("r", "radio_selected", "Radio", show=False),
         Binding("plus", "volume_up", "Vol +", show=False),
         Binding("equals", "volume_up", "Vol +", show=False),
@@ -65,11 +63,10 @@ class YTMusicApp(App):
         Binding("c", "clear_queue", "Clear", show=False),
         Binding("left", "seek_backward", "Seek -5s", show=False),
         Binding("right", "seek_forward", "Seek +5s", show=False),
-        Binding("tab", "toggle_focus", "Switch Focus", show=False),
-        Binding("escape", "handle_escape", "Back / Defocus", show=False),
+        Binding("escape", "handle_escape", "Back", show=False),
         Binding("t", "reload_theme", "Sync Theme", show=False),
+        Binding("question_mark", "show_help", "Help", show=False),
         Binding("q", "quit_app", "Quit", show=False),
-        # Number shortcuts for view switching
         Binding("1", "switch_view_1", "Trending", show=False),
         Binding("2", "switch_view_2", "Radio", show=False),
         Binding("3", "switch_view_3", "Moods", show=False),
@@ -77,42 +74,55 @@ class YTMusicApp(App):
         Binding("5", "switch_view_5", "Queue", show=False),
     ]
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-        # Initialize Omarchy theme manager and compile current palette into styles.tcss
         self.theme_manager = OmarchyThemeManager()
-        try:
-            tcss = self.theme_manager.generate_tcss()
-            tcss_file = Path(__file__).parent / "styles.tcss"
-            tcss_file.write_text(tcss, encoding="utf-8")
-        except Exception:
-            pass
+        self._theme_version = 0
+        self._install_theme()
 
         self.api = YTMusicAPI()
         self.player = MPVPlayer(resolver=self.api.resolver)
-        self.active_view_id: str = "view_trending"
-        self.previous_view_id: str = "view_trending"
-        self._is_muted = False
-        self._pre_mute_volume = 80
 
+        self.active_view_id = "view_trending"
+        self.previous_view_id = "view_trending"
+
+    # ------------------------------------------------------------------ #
+    # Theme plumbing
+    # ------------------------------------------------------------------ #
+    def _install_theme(self) -> None:
+        """Register the current palette as a fresh Textual theme and apply it."""
+        self._theme_version += 1
+        theme = OmarchyThemeManager.build_textual_theme(
+            self.theme_manager.current_theme, self._theme_version
+        )
+        self.register_theme(theme)
+        self.theme = theme.name
+
+    def _refresh_widgets_theme(self) -> None:
+        try:
+            self.query_one("#top_bar", TopBar).refresh_theme()
+            self.query_one("#player_bar", PlayerBar).refresh_theme()
+            view = self.query_one(f"#{self.active_view_id}")
+            if hasattr(view, "refresh_theme"):
+                view.refresh_theme()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # Layout
+    # ------------------------------------------------------------------ #
     def compose(self) -> ComposeResult:
-        header = HeaderBar(id="app_header")
-        header.theme_name = self.theme_manager.current_theme.name
-        yield header
-        with Horizontal(id="main_body_container"):
-            yield SidebarNav(id="app_sidebar")
-            with ContentSwitcher(initial="view_trending", id="content_switcher"):
-                yield TrendingView(id="view_trending")
-                yield RadioView(id="view_radio")
-                yield MoodsPlaylistsView(id="view_moods")
-                yield PlaylistDetailView(id="view_playlist_detail")
-                yield SearchView(id="view_search")
-                yield QueueView(id="view_queue")
-        yield BottomPlayerBar(id="app_player_bar")
+        yield TopBar(id="top_bar")
+        with ContentSwitcher(initial="view_trending", id="content_switcher"):
+            yield TrendingView(id="view_trending")
+            yield RadioView(id="view_radio")
+            yield MoodsPlaylistsView(id="view_moods")
+            yield PlaylistDetailView(id="view_playlist_detail")
+            yield SearchView(id="view_search")
+            yield QueueView(id="view_queue")
+        yield PlayerBar(id="player_bar")
 
     def on_mount(self) -> None:
-        """Initialize player event callbacks and launch background discovery loader."""
-        # Setup player callbacks
         self.player.on_track_change = self._on_player_track_change
         self.player.on_state_change = self._on_player_state_change
         self.player.on_progress = self._on_player_progress
@@ -120,70 +130,43 @@ class YTMusicApp(App):
         self.player.on_autoplay_trigger = self._on_player_autoplay_trigger
         self.player.on_message = self._on_player_message
 
-        # Periodic progress ticker for ultra-smooth seek bar and duration
-        self.set_interval(0.25, self._tick_progress)
+        self.query_one("#top_bar", TopBar).theme_name = self.theme_manager.current_theme.name
 
-        # Periodic Omarchy theme sync watcher (checks colors.toml mtime every 1.5s)
+        self.set_interval(0.25, self._tick_progress)
         self.set_interval(1.5, self._check_theme_sync)
 
-        # Kick off background data loading without blocking UI startup
+        self._focus_content()
         self.load_initial_data()
 
+    # ------------------------------------------------------------------ #
+    # Periodic timers
+    # ------------------------------------------------------------------ #
     def _tick_progress(self) -> None:
-        """Periodic timer to update seek bar dynamically while playing."""
         if self.player.is_playing and not self.player.is_paused:
-            bar = self.query_one("#app_player_bar", BottomPlayerBar)
-            bar.update_progress(self.player.playback_pos, self.player.duration)
+            self.query_one("#player_bar", PlayerBar).set_progress(
+                self.player.playback_pos, self.player.duration
+            )
 
     def _check_theme_sync(self) -> None:
-        """Check for Omarchy desktop theme changes in background."""
         new_theme = self.theme_manager.reload()
         if new_theme:
-            self._apply_new_theme(new_theme)
+            self._apply_theme(new_theme)
 
-    def _apply_new_theme(self, new_theme: ThemeColors) -> None:
-        """Apply newly updated Omarchy theme colors dynamically."""
-        try:
-            tcss = self.theme_manager.generate_tcss(new_theme)
-            tcss_file = Path(__file__).parent / "styles.tcss"
-            tcss_file.write_text(tcss, encoding="utf-8")
-
-            # Reload Textual stylesheet
-            self.stylesheet.read_all([str(tcss_file)])
-            self.stylesheet.reparse()
-            self.stylesheet.update(self)
-
-            # Update widgets
-            header = self.query_one("#app_header", HeaderBar)
-            header.theme_name = new_theme.name
-            header.refresh_theme()
-
-            sidebar = self.query_one("#app_sidebar", SidebarNav)
-            sidebar.refresh_theme()
-
-            player_bar = self.query_one("#app_player_bar", BottomPlayerBar)
-            player_bar.refresh_theme()
-
-            # Refresh active view
-            try:
-                view = self.query_one(f"#{self.active_view_id}")
-                if hasattr(view, "refresh_theme"):
-                    view.refresh_theme()
-            except Exception:
-                pass
-
-            self.refresh(layout=True)
-            self.notify(f"Synced with Omarchy theme: {new_theme.name}", title="Palette Synced", timeout=2.5)
-        except Exception:
-            pass
+    def _apply_theme(self, colors: ThemeColors) -> None:
+        self._install_theme()
+        self.query_one("#top_bar", TopBar).theme_name = colors.name
+        self._refresh_widgets_theme()
+        self.refresh(layout=True)
+        self.notify(f"theme · {colors.name}", timeout=2)
 
     def action_reload_theme(self) -> None:
-        """Manual trigger to sync with Omarchy desktop theme ('t')."""
         self.theme_manager.load_theme()
-        self._apply_new_theme(self.theme_manager.current_theme)
+        self._apply_theme(self.theme_manager.current_theme)
 
-    def _safe_call(self, callback: Any, *args: Any, **kwargs: Any) -> None:
-        """Call callback directly if in main app thread, or via call_from_thread if in background thread."""
+    # ------------------------------------------------------------------ #
+    # Thread-safe callback helper
+    # ------------------------------------------------------------------ #
+    def _safe_call(self, callback, *args, **kwargs) -> None:
         try:
             if getattr(self, "_thread_id", None) == threading.get_ident():
                 callback(*args, **kwargs)
@@ -192,249 +175,201 @@ class YTMusicApp(App):
         except Exception:
             pass
 
-    # --- Player Callback Handlers ---
+    def _set_status(self, text: str) -> None:
+        try:
+            self.query_one("#top_bar", TopBar).status = text
+        except Exception:
+            pass
 
+    # ------------------------------------------------------------------ #
+    # Player callbacks
+    # ------------------------------------------------------------------ #
     def _on_player_track_change(self, track: Optional[Track]) -> None:
         def _update():
-            bar = self.query_one("#app_player_bar", BottomPlayerBar)
-            bar.update_track(track, self.player.current_stream_quality, self.player.autoplay)
-            if track:
-                self.notify(f"Playing: {track.title} • {track.artist}", title="Now Playing", timeout=3)
+            bar = self.query_one("#player_bar", PlayerBar)
+            bar.set_track(track, self.player.current_stream_quality)
         self._safe_call(_update)
 
     def _on_player_state_change(self, is_playing: bool, is_paused: bool, is_buffering: bool) -> None:
         def _update():
-            bar = self.query_one("#app_player_bar", BottomPlayerBar)
-            bar.update_state(
-                is_playing,
-                is_paused,
-                is_buffering,
-                self.player.volume,
-                len(self.player.queue),
+            self.query_one("#player_bar", PlayerBar).set_state(
+                is_playing, is_paused, is_buffering
             )
-            header = self.query_one("#app_header", HeaderBar)
-            header.is_buffering = is_buffering
-            if is_buffering:
-                header.status_text = "Buffering stream"
-            elif is_playing:
-                header.status_text = "Playing"
-            elif is_paused:
-                header.status_text = "Paused"
-            else:
-                header.status_text = "Ready"
+            top = self.query_one("#top_bar", TopBar)
+            top.is_playing = is_playing
+            top.is_paused = is_paused
+            top.is_buffering = is_buffering
         self._safe_call(_update)
 
     def _on_player_progress(self, pos: float, duration: float) -> None:
         def _update():
-            bar = self.query_one("#app_player_bar", BottomPlayerBar)
-            bar.update_progress(pos, duration)
+            self.query_one("#player_bar", PlayerBar).set_progress(pos, duration)
         self._safe_call(_update)
 
     def _on_player_queue_change(self) -> None:
         def _update():
-            bar = self.query_one("#app_player_bar", BottomPlayerBar)
-            bar.update_state(
-                self.player.is_playing,
-                self.player.is_paused,
-                self.player.is_buffering,
-                self.player.volume,
-                len(self.player.queue),
-            )
-            # If QueueView is mounted, refresh its data
+            top = self.query_one("#top_bar", TopBar)
+            top.queue_len = len(self.player.queue)
             try:
-                qv = self.query_one("#view_queue", QueueView)
-                qv.set_queue(list(self.player.queue))
+                self.query_one("#view_queue", QueueView).set_queue(list(self.player.queue))
             except Exception:
                 pass
         self._safe_call(_update)
 
     def _on_player_autoplay_trigger(self, last_track: Track) -> None:
-        """Triggered when queue ends and continuous autoplay is active."""
         self.run_autoplay_worker(last_track)
 
     def _on_player_message(self, msg: str) -> None:
-        def _notify():
-            self.notify(msg, title="Player Notice", severity="warning", timeout=4)
-        self._safe_call(_notify)
+        self._safe_call(self.notify, msg, severity="warning", timeout=4)
 
-    # --- Background Workers (@work) ---
-
+    # ------------------------------------------------------------------ #
+    # Background workers
+    # ------------------------------------------------------------------ #
     @work(group="initial_loader", exclusive=True, thread=True)
     def load_initial_data(self) -> None:
-        """Load charts and mood categories in parallel without freezing UI."""
-        self._safe_call(self._set_header_status, "Fetching charts...")
+        self._safe_call(self._set_status, "loading charts…")
         try:
             tracks, playlists = self.api.get_charts()
-            def _update_trending():
-                tv = self.query_one("#view_trending", TrendingView)
-                tv.populate_data(tracks, playlists)
-            self._safe_call(_update_trending)
+            self._safe_call(
+                lambda: self.query_one("#view_trending", TrendingView).populate_data(
+                    tracks, playlists
+                )
+            )
         except Exception as e:
-            self._safe_call(self.notify, f"Error loading charts: {e}", severity="error")
+            self._safe_call(self.notify, f"could not load charts: {e}", severity="error")
 
+        self._safe_call(self._set_status, "loading moods…")
         try:
             categories = self.api.get_mood_categories()
-            def _update_moods():
-                mv = self.query_one("#view_moods", MoodsPlaylistsView)
-                mv.populate_categories(categories)
-            self._safe_call(_update_moods)
-
-            # Auto load first category playlists if present
-            first_cat = None
-            for group, cats in categories.items():
-                if cats:
-                    first_cat = cats[0]
-                    break
+            self._safe_call(
+                lambda: self.query_one("#view_moods", MoodsPlaylistsView).populate_categories(
+                    categories
+                )
+            )
+            first_cat = next((c for cats in categories.values() for c in cats), None)
             if first_cat:
                 self.load_category_playlists_worker(first_cat)
-        except Exception as e:
+        except Exception:
             pass
 
-        self._safe_call(self._set_header_status, "Ready")
+        self._safe_call(self._set_status, "")
 
     @work(group="category_loader", exclusive=True, thread=True)
     def load_category_playlists_worker(self, category: Category) -> None:
-        """Fetch playlists for a mood/genre category."""
-        self._safe_call(self._set_header_status, f"Loading {category.title} playlists...")
+        self._safe_call(self._set_status, f"loading {category.title}…")
         try:
             playlists = self.api.get_mood_playlists(category.params)
-            def _update():
-                mv = self.query_one("#view_moods", MoodsPlaylistsView)
-                mv.populate_playlists(category.title, playlists)
-            self._safe_call(_update)
+            self._safe_call(
+                lambda: self.query_one("#view_moods", MoodsPlaylistsView).populate_playlists(
+                    category.title, playlists
+                )
+            )
         except Exception as e:
-            self._safe_call(self.notify, f"Failed to load playlists: {e}", severity="warning")
-        self._safe_call(self._set_header_status, "Ready")
+            self._safe_call(self.notify, f"could not load playlists: {e}", severity="warning")
+        self._safe_call(self._set_status, "")
 
     @work(group="playlist_loader", exclusive=True, thread=True)
     def load_playlist_worker(self, playlist: Playlist) -> None:
-        """Fetch all tracks for a selected playlist and switch to detail view."""
-        self._safe_call(self._set_header_status, f"Loading {playlist.title}...")
+        self._safe_call(self._set_status, f"opening {playlist.title}…")
         try:
             pl_info, tracks = self.api.get_playlist(playlist.id)
+
             def _update():
-                pv = self.query_one("#view_playlist_detail", PlaylistDetailView)
-                pv.set_playlist(pl_info, tracks)
-                self.switch_view("view_playlist_detail", f"📂 {playlist.title}")
+                self.query_one("#view_playlist_detail", PlaylistDetailView).set_playlist(
+                    pl_info, tracks
+                )
+                self.switch_view("view_playlist_detail")
             self._safe_call(_update)
         except Exception as e:
-            self._safe_call(self.notify, f"Error loading playlist: {e}", severity="error")
-        self._safe_call(self._set_header_status, "Ready")
+            self._safe_call(self.notify, f"could not open playlist: {e}", severity="error")
+        self._safe_call(self._set_status, "")
 
     @work(group="radio_loader", exclusive=True, thread=True)
     def start_radio_worker(self, seed_track: Track) -> None:
-        """Fetch algorithmic recommendations based on seed track."""
-        self._safe_call(self._set_header_status, f"Generating radio for {seed_track.title}...")
+        self._safe_call(self._set_status, f"building radio for {seed_track.title}…")
         try:
             recommendations = self.api.get_radio(seed_track.id, limit=35)
-            # Filter out seed track from recommendations list if present
-            recs_filtered = [t for t in recommendations if t.id != seed_track.id]
-            if not recs_filtered:
-                recs_filtered = recommendations
+            recs = [t for t in recommendations if t.id != seed_track.id] or recommendations
 
             def _update():
-                rv = self.query_one("#view_radio", RadioView)
-                rv.set_radio_tracks(seed_track, recs_filtered)
-                self.switch_view("view_radio", f"📻 Radio: {seed_track.title}")
-                # Play seed track and queue recommendations
+                self.query_one("#view_radio", RadioView).set_radio_tracks(seed_track, recs)
+                self.switch_view("view_radio")
                 self.player.play(seed_track)
-                self.player.append_queue(recs_filtered)
-                self.notify(f"Infinite Radio started! Queued {len(recs_filtered)} tracks.", title="Radio Active")
-
+                self.player.append_queue(recs)
             self._safe_call(_update)
         except Exception as e:
-            self._safe_call(self.notify, f"Failed to generate radio: {e}", severity="error")
-        self._safe_call(self._set_header_status, "Ready")
+            self._safe_call(self.notify, f"could not build radio: {e}", severity="error")
+        self._safe_call(self._set_status, "")
 
     @work(group="autoplay_loader", exclusive=True, thread=True)
     def run_autoplay_worker(self, last_track: Track) -> None:
-        """Continuous autoplay worker: fetch recommendations for last played song."""
-        self._safe_call(self._set_header_status, f"Autoplay: Finding recs for {last_track.title}...")
+        self._safe_call(self._set_status, "finding more music…")
         try:
             recs = self.api.get_radio(last_track.id, limit=20)
-            recs_filtered = [t for t in recs if t.id != last_track.id]
-            if not recs_filtered:
-                recs_filtered = recs
-
-            if recs_filtered:
-                first = recs_filtered[0]
-                rest = recs_filtered[1:]
+            recs = [t for t in recs if t.id != last_track.id] or recs
+            if recs:
                 def _play():
-                    self.player.play(first)
-                    self.player.append_queue(rest)
-                    self.notify(
-                        f"Autoplay: Queued {len(recs_filtered)} recommendations from {last_track.title}",
-                        title="Continuous Autoplay",
-                    )
+                    self.player.play(recs[0])
+                    self.player.append_queue(recs[1:])
                 self._safe_call(_play)
         except Exception as e:
-            self._safe_call(self.notify, f"Autoplay fetch failed: {e}", severity="warning")
-        self._safe_call(self._set_header_status, "Ready")
+            self._safe_call(self.notify, f"autoplay failed: {e}", severity="warning")
+        self._safe_call(self._set_status, "")
 
     @work(group="search_loader", exclusive=True, thread=True)
     def search_worker(self, query: str) -> None:
-        """Execute unauthenticated search across songs and playlists."""
-        self._safe_call(self._set_header_status, f"Searching for '{query}'...")
+        self._safe_call(self._set_status, f"searching “{query}”…")
         try:
             songs = self.api.search_songs(query, limit=30)
             playlists = self.api.search_playlists(query, limit=20)
-            def _update():
-                sv = self.query_one("#view_search", SearchView)
-                sv.set_results(songs, playlists)
-                self.notify(f"Found {len(songs)} songs, {len(playlists)} playlists for '{query}'.")
-            self._safe_call(_update)
+            self._safe_call(
+                lambda: self.query_one("#view_search", SearchView).set_results(songs, playlists)
+            )
         except Exception as e:
-            self._safe_call(self.notify, f"Search failed: {e}", severity="error")
-        self._safe_call(self._set_header_status, "Ready")
+            self._safe_call(self.notify, f"search failed: {e}", severity="error")
+        self._safe_call(self._set_status, "")
 
-    # --- View Navigation & Helpers ---
-
-    def _set_header_status(self, text: str) -> None:
-        header = self.query_one("#app_header", HeaderBar)
-        header.status_text = text
-
-    def switch_view(self, view_id: str, view_label: str) -> None:
-        """Switch the main content switcher view."""
+    # ------------------------------------------------------------------ #
+    # Navigation
+    # ------------------------------------------------------------------ #
+    def switch_view(self, view_id: str, focus: bool = True) -> None:
         if self.active_view_id != view_id:
             self.previous_view_id = self.active_view_id
             self.active_view_id = view_id
 
-        switcher = self.query_one("#content_switcher", ContentSwitcher)
-        switcher.current = view_id
+        self.query_one("#content_switcher", ContentSwitcher).current = view_id
+        self.query_one("#top_bar", TopBar).active_view_id = view_id
 
-        header = self.query_one("#app_header", HeaderBar)
-        header.active_view = view_label
+        if view_id == "view_queue":
+            self.query_one("#view_queue", QueueView).set_queue(list(self.player.queue))
+
+        if focus:
+            self._focus_content()
 
     def switch_to_previous_view(self) -> None:
-        """Return to the previously active view."""
-        label_map = {
-            "view_trending": "🎵 Trending / Charts",
-            "view_radio": "📻 Song Radio & Recs",
-            "view_moods": "📂 Moods & Playlists",
-            "view_search": "🔍 Search",
-            "view_queue": "📋 Current Queue",
-        }
-        self.switch_view(self.previous_view_id, label_map.get(self.previous_view_id, "Trending"))
+        self.switch_view(self.previous_view_id)
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Sidebar item selected."""
-        item_id = event.item.id or ""
-        if item_id == "nav_trending":
-            self.switch_view("view_trending", "🎵 Trending / Charts")
-        elif item_id == "nav_radio":
-            self.switch_view("view_radio", "📻 Song Radio & Recs")
-        elif item_id == "nav_moods":
-            self.switch_view("view_moods", "📂 Moods & Playlists")
-        elif item_id == "nav_search":
-            self.switch_view("view_search", "🔍 Search")
-            self.action_focus_search()
-        elif item_id == "nav_queue":
-            self.switch_view("view_queue", "📋 Current Queue")
-            qv = self.query_one("#view_queue", QueueView)
-            qv.set_queue(list(self.player.queue))
+    def _focus_content(self) -> None:
+        try:
+            view = self.query_one(f"#{self.active_view_id}")
+            widget = view.primary_widget() if hasattr(view, "primary_widget") else None
+            if widget is not None:
+                widget.focus()
+        except Exception:
+            pass
 
-    # --- Custom UI Message Handlers ---
+    def on_top_bar_tab_clicked(self, message: TopBar.TabClicked) -> None:
+        self.switch_view(message.view_id)
 
+    def _current_view(self):
+        try:
+            return self.query_one(f"#{self.active_view_id}")
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------ #
+    # Messages from views
+    # ------------------------------------------------------------------ #
     def on_play_track_msg(self, msg: PlayTrackMsg) -> None:
         self.player.play(msg.track)
         if msg.remaining_tracks:
@@ -443,7 +378,6 @@ class YTMusicApp(App):
 
     def on_queue_track_msg(self, msg: QueueTrackMsg) -> None:
         self.player.append_queue(msg.track)
-        self.notify(f"Queued: {msg.track.title} • {msg.track.artist}", title="Added to Queue")
 
     def on_start_radio_msg(self, msg: StartRadioMsg) -> None:
         self.start_radio_worker(msg.track)
@@ -457,191 +391,157 @@ class YTMusicApp(App):
     def on_execute_search_msg(self, msg: ExecuteSearchMsg) -> None:
         self.search_worker(msg.query)
 
-    # --- Global Keybindings & Actions ---
-
+    # ------------------------------------------------------------------ #
+    # Global key handling
+    # ------------------------------------------------------------------ #
     def on_key(self, event: events.Key) -> None:
-        """Handle keyboard events without interfering with typing in Input boxes."""
-        if isinstance(self.focused, Input):
-            if event.key == "escape":
-                self.set_focus(None)
-                event.prevent_default()
-            return
+        if isinstance(self.focused, Input) and event.key == "escape":
+            self._focus_content()
+            event.prevent_default()
 
     def action_focus_search(self) -> None:
-        """Focus the search input bar directly."""
-        self.switch_view("view_search", "🔍 Search")
+        self.switch_view("view_search", focus=False)
         try:
-            inp = self.query_one("#search_input", Input)
-            inp.focus()
+            self.query_one("#search_input", Input).focus()
         except Exception:
             pass
 
     def action_toggle_play(self) -> None:
-        """Toggle play / pause."""
         self.player.toggle_pause()
 
     def action_next_track(self) -> None:
-        """Advance to next track in queue."""
         self.player.next_track()
 
     def action_prev_track(self) -> None:
-        """Previous track or restart."""
         self.player.prev_track()
 
     def action_cursor_down(self) -> None:
-        """Vim 'j' or Down arrow cursor navigation."""
         focused = self.focused
-        if focused and hasattr(focused, "action_cursor_down"):
+        if focused is not None and hasattr(focused, "action_cursor_down"):
             focused.action_cursor_down()
 
     def action_cursor_up(self) -> None:
-        """Vim 'k' or Up arrow cursor navigation."""
         focused = self.focused
-        if focused and hasattr(focused, "action_cursor_up"):
+        if focused is not None and hasattr(focused, "action_cursor_up"):
             focused.action_cursor_up()
 
     def action_queue_selected(self) -> None:
-        """Append currently highlighted track or playlist to queue ('a')."""
         track = self._get_highlighted_track()
         if track:
             self.player.append_queue(track)
-            self.notify(f"Queued: {track.title} • {track.artist}", title="Added to Queue")
             return
 
-        # Check for playlist
         playlist = self._get_highlighted_playlist()
         if playlist:
-            self.notify(f"Fetching tracks to queue for {playlist.title}...")
+            self.notify(f"adding {playlist.title}…", timeout=2)
 
             def _fetch_and_queue():
                 try:
                     _, tracks = self.api.get_playlist(playlist.id)
                     self.player.append_queue(tracks)
-                    self.call_from_thread(
-                        self.notify,
-                        f"Queued {len(tracks)} tracks from {playlist.title}",
-                        title="Playlist Queued",
-                    )
                 except Exception as e:
-                    self.call_from_thread(self.notify, f"Error queuing playlist: {e}", severity="error")
+                    self.call_from_thread(
+                        self.notify, f"could not queue playlist: {e}", severity="error"
+                    )
 
             threading.Thread(target=_fetch_and_queue, daemon=True).start()
 
+    def action_queue_all(self) -> None:
+        view = self._current_view()
+        tracks = view.get_all_tracks() if hasattr(view, "get_all_tracks") else []
+        if not tracks:
+            self.notify("nothing to queue here", severity="warning", timeout=2)
+            return
+        self.player.append_queue(tracks)
+
+    def action_play_all(self) -> None:
+        view = self._current_view()
+        tracks = view.get_all_tracks() if hasattr(view, "get_all_tracks") else []
+        if not tracks:
+            self.notify("nothing to play here", severity="warning", timeout=2)
+            return
+        self.player.play(tracks[0])
+        self.player.queue.clear()
+        self.player.append_queue(tracks[1:])
+
+    def action_remove_selected(self) -> None:
+        if self.active_view_id != "view_queue":
+            return
+        try:
+            table = self.query_one("#queue_table")
+            index = table.cursor_row
+            self.player.remove_from_queue(index)
+        except Exception:
+            pass
+
     def action_radio_selected(self) -> None:
-        """Generate song radio from highlighted track ('r')."""
-        track = self._get_highlighted_track()
-        if not track:
-            track = self.player.current_track
+        track = self._get_highlighted_track() or self.player.current_track
         if track:
             self.start_radio_worker(track)
         else:
-            self.notify("Highlight or play a song first to start a radio station.", severity="warning")
+            self.notify("highlight or play a song first", severity="warning", timeout=2)
 
     def _get_highlighted_track(self) -> Optional[Track]:
-        """Extract currently highlighted track from active view."""
-        switcher = self.query_one("#content_switcher", ContentSwitcher)
-        current = switcher.current
-        try:
-            if current == "view_trending":
-                return self.query_one("#view_trending", TrendingView).get_selected_track()
-            elif current == "view_radio":
-                return self.query_one("#view_radio", RadioView).get_selected_track()
-            elif current == "view_playlist_detail":
-                return self.query_one("#view_playlist_detail", PlaylistDetailView).get_selected_track()
-            elif current == "view_search":
-                return self.query_one("#view_search", SearchView).get_selected_track()
-        except Exception:
-            pass
+        view = self._current_view()
+        if view is not None and hasattr(view, "get_selected_track"):
+            return view.get_selected_track()
         return None
 
     def _get_highlighted_playlist(self) -> Optional[Playlist]:
-        """Extract currently highlighted playlist from active view."""
-        switcher = self.query_one("#content_switcher", ContentSwitcher)
-        current = switcher.current
-        try:
-            if current == "view_trending":
-                return self.query_one("#view_trending", TrendingView).get_selected_playlist()
-            elif current == "view_moods":
-                return self.query_one("#view_moods", MoodsPlaylistsView).get_selected_playlist()
-            elif current == "view_search":
-                return self.query_one("#view_search", SearchView).get_selected_playlist()
-        except Exception:
-            pass
+        view = self._current_view()
+        if view is not None and hasattr(view, "get_selected_playlist"):
+            return view.get_selected_playlist()
         return None
 
     def action_volume_up(self) -> None:
-        """Increase volume by 5%."""
         self.player.adjust_volume(5)
-        self.notify(f"Volume: {self.player.volume}%", timeout=1.5)
 
     def action_volume_down(self) -> None:
-        """Decrease volume by 5%."""
         self.player.adjust_volume(-5)
-        self.notify(f"Volume: {self.player.volume}%", timeout=1.5)
 
     def action_seek_forward(self) -> None:
-        """Seek forward 5 seconds."""
         self.player.seek(5.0)
 
     def action_seek_backward(self) -> None:
-        """Seek backward 5 seconds."""
         self.player.seek(-5.0)
 
     def action_shuffle_queue(self) -> None:
-        """Shuffle remaining queue."""
         self.player.shuffle_queue()
-        self.notify("Queue shuffled 🔀")
 
     def action_clear_queue(self) -> None:
-        """Clear queue."""
         self.player.clear_queue()
-        self.notify("Queue cleared 🗑️")
 
-    def action_toggle_focus(self) -> None:
-        """Toggle focus between Sidebar and Main Content Area (Tab)."""
-        sidebar_list = self.query_one("#nav_list", ListView)
-        if self.focused == sidebar_list:
-            # Switch to active table in content switcher
-            try:
-                table = self.query_one(f"#{self.active_view_id} DataTable", DataTable)
-                table.focus()
-            except Exception:
-                self.set_focus(None)
-        else:
-            sidebar_list.focus()
+    def action_show_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def action_handle_escape(self) -> None:
-        """Escape handles going back from playlist detail or unfocusing inputs."""
         if isinstance(self.focused, Input):
-            self.set_focus(None)
+            self._focus_content()
             return
         if self.active_view_id == "view_playlist_detail":
             self.switch_to_previous_view()
+            return
+        self._focus_content()
 
     def action_switch_view_1(self) -> None:
-        self.switch_view("view_trending", "🎵 Trending / Charts")
+        self.switch_view("view_trending")
 
     def action_switch_view_2(self) -> None:
-        self.switch_view("view_radio", "📻 Song Radio & Recs")
+        self.switch_view("view_radio")
 
     def action_switch_view_3(self) -> None:
-        self.switch_view("view_moods", "📂 Moods & Playlists")
+        self.switch_view("view_moods")
 
     def action_switch_view_4(self) -> None:
-        self.switch_view("view_search", "🔍 Search")
         self.action_focus_search()
 
     def action_switch_view_5(self) -> None:
-        self.switch_view("view_queue", "📋 Current Queue")
-        qv = self.query_one("#view_queue", QueueView)
-        qv.set_queue(list(self.player.queue))
+        self.switch_view("view_queue")
 
     def action_quit_app(self) -> None:
-        """Safely stop audio, clean IPC sockets/processes, and exit."""
         self.player.cleanup()
         self.exit()
 
 
 if __name__ == "__main__":
-    app = YTMusicApp()
-    app.run()
+    YTMusicApp().run()
