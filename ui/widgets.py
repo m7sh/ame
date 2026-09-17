@@ -29,6 +29,7 @@ VIEWS: List[Tuple[str, str, str]] = [
     ("3", "moods", "view_moods"),
     ("4", "search", "view_search"),
     ("5", "queue", "view_queue"),
+    ("6", "library", "view_library"),
 ]
 
 HELP_HINTS: List[Tuple[str, str]] = [
@@ -364,7 +365,6 @@ class PlayerBar(Widget):
         with Horizontal(id="player_row"):
             yield Static("", id="player_now")
             yield Static("", id="player_meta")
-        yield Spectrum(id="player_spectrum")
         yield SeekBar(id="player_seek")
         yield HelpBar(id="player_help")
 
@@ -458,24 +458,10 @@ class PlayerBar(Widget):
             pass
         return self.help_visible
 
-    def set_bands(self, bands: List[float]) -> None:
-        try:
-            self.query_one("#player_spectrum", Spectrum).set_bands(bands)
-        except Exception:
-            pass
-
-    def toggle_visualizer(self) -> bool:
-        try:
-            spectrum = self.query_one("#player_spectrum", Spectrum)
-        except Exception:
-            return False
-        spectrum.display = not spectrum.display
-        return spectrum.display
-
     def refresh_theme(self) -> None:
         self._render_now()
         self._render_meta()
-        for selector in ("#player_spectrum", "#player_seek", "#player_help"):
+        for selector in ("#player_seek", "#player_help"):
             try:
                 self.query_one(selector).refresh()
             except Exception:
@@ -506,6 +492,8 @@ class HelpScreen(ModalScreen):
         ("s / c", "shuffle / clear queue"),
         ("/", "focus search"),
         ("1 - 5", "jump to view"),
+        ("6", "library (signed in)"),
+        ("g", "sign in / account"),
         ("h", "toggle the help bar"),
         ("v", "toggle the visualizer"),
         ("t", "sync Omarchy theme"),

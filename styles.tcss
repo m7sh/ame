@@ -1,6 +1,13 @@
 /* ytmusic-tui — minimal terminal stylesheet.
  * All colors are CSS variables injected by the Omarchy theme engine,
- * so switching themes never rewrites or reparses this file. */
+ * so switching themes never rewrites or reparses this file.
+ *
+ * Backgrounds resolve to `ansi_default` so the terminal's own background
+ * (and its opacity/transparency) shows through. */
+
+App {
+    background: ansi_default;
+}
 
 Screen {
     background: $ytm-bg;
@@ -39,7 +46,7 @@ TopBar {
 .section_header {
     height: 1;
     padding: 0 2;
-    background: transparent;
+    background: ansi_default;
 }
 
 /* ------------------------------------------------------------------ */
@@ -47,7 +54,7 @@ TopBar {
 /* ------------------------------------------------------------------ */
 DataTable {
     height: 1fr;
-    background: transparent;
+    background: ansi_default;
     border: none;
     padding: 0 2;
     overflow-x: hidden;
@@ -131,7 +138,7 @@ Tab.-active {
 
 #categories_list {
     height: 1fr;
-    background: transparent;
+    background: ansi_default;
     border: none;
     padding: 0;
     overflow-x: hidden;
@@ -216,9 +223,10 @@ SeekBar {
     width: 100%;
 }
 
-#player_spectrum {
+#spectrum {
     height: 5;
     width: 100%;
+    padding: 0 2;
     margin: 0 0 1 0;
 }
 
@@ -232,7 +240,7 @@ SeekBar {
 /* ------------------------------------------------------------------ */
 HelpScreen {
     align: center middle;
-    background: $ytm-bg 85%;
+    background: ansi_default;
 }
 
 #help_panel {
@@ -259,4 +267,77 @@ HelpScreen {
 .help_footer {
     height: 1;
     color: $ytm-muted;
+}
+
+/* ------------------------------------------------------------------ */
+/* Account overlay                                                     */
+/* ------------------------------------------------------------------ */
+AccountScreen {
+    align: center middle;
+    background: ansi_default;
+}
+
+#account_panel {
+    width: 74;
+    max-width: 96%;
+    height: auto;
+    max-height: 90%;
+    background: $ytm-surface;
+    border: none;
+    padding: 1 3;
+}
+
+#account_body {
+    height: auto;
+    color: $ytm-fg;
+    margin: 1 0;
+}
+
+#account_note {
+    height: auto;
+    color: $ytm-muted;
+}
+
+#account_client_id, #account_client_secret {
+    height: 3;
+    margin: 0 0 1 0;
+    background: ansi_default;
+    color: $ytm-fg;
+    border: none;
+    padding: 0 1;
+}
+
+#account_client_id:focus, #account_client_secret:focus {
+    background: $ytm-hover;
+    color: $ytm-accent;
+}
+
+#account_buttons {
+    height: 3;
+    margin-top: 1;
+}
+
+#account_buttons > Button {
+    margin-right: 2;
+}
+
+#account_status {
+    height: auto;
+    margin-top: 1;
+    color: $ytm-muted;
+}
+
+/* Borderless buttons (used by the account overlay) */
+Button {
+    border: none;
+    background: $ytm-hover;
+    color: $ytm-fg;
+    height: 3;
+    min-width: 12;
+    padding: 0 2;
+}
+
+Button:hover {
+    background: $ytm-active;
+    color: $ytm-accent;
 }

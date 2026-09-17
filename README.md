@@ -24,8 +24,13 @@ one list, and a slim player — nothing else competing for attention.
   variables, so switching your desktop theme restyles the app instantly with
   no flicker and no file rewrites.
 - **Real spectrum visualizer** — `cava` taps the PipeWire monitor and drives
-  fractional-block bars with a green→yellow→red gradient. Press `v` to hide
-  it; it is omitted automatically when `cava` is not installed.
+  fractional-block bars with a green→yellow→red gradient across the top of the
+  screen, above the track list. Press `v` to hide it; it is omitted
+  automatically when `cava` is not installed.
+- **Terminal transparency** — the app paints no background of its own, so your
+  terminal's opacity/blur shows through while accents stay truecolor.
+- **Google sign-in** — optional OAuth device flow that unlocks your library and
+  liked songs (press `g`).
 
 The chrome takes its cues from [cliamp](https://github.com/bjarneo/cliamp):
 a letterspaced wordmark, bracketed chips, `▸─ section ──` dividers, a block
@@ -36,6 +41,7 @@ volume meter and key pills in the help bar.
 ## Features
 
 - Zero authentication / guest mode (`YTMusic()` with no credentials).
+- Optional Google sign-in (your own OAuth client) for your library and liked songs.
 - Trending charts, mood and genre browsing, search and song radio.
 - Infinite radio plus continuous autoplay when the queue runs dry.
 - Full queue control: append, play-all, shuffle, remove and clear.
@@ -63,6 +69,8 @@ volume meter and key pills in the help bar.
 | `s` / `c` | shuffle / clear the queue |
 | `/` | focus search |
 | `1` – `5` | jump to trending / radio / moods / search / queue |
+| `6` | library (signed in) |
+| `g` | sign in / account |
 | `h` | show / hide the help bar |
 | `v` | show / hide the spectrum visualizer |
 | `esc` | back or close overlay |
@@ -116,14 +124,33 @@ ytmusic-tui/
 ├── api.py            # Guest-mode ytmusicapi client + yt-dlp stream resolver
 ├── player.py         # Headless mpv IPC client, queue state machine
 ├── spectrum.py       # cava subprocess bridge for the spectrum visualizer
+├── auth.py           # Google OAuth device flow + token persistence
 ├── theme.py          # Omarchy palette detection -> native Textual Theme
 ├── styles.tcss       # Static stylesheet driven by theme CSS variables
 ├── requirements.txt
 ├── ytmusic-tui       # Launcher script
 └── ui/
     ├── widgets.py    # TopBar, SectionHeader, SeekBar, HelpBar, PlayerBar
-    └── views.py      # Trending, Radio, Moods, Playlist, Search, Queue
+    ├── account.py    # Google sign-in overlay
+    └── views.py      # Trending, Radio, Moods, Playlist, Search, Queue, Library
 ```
+
+---
+
+## Google sign-in
+
+Signing in is optional and uses **your own** Google Cloud OAuth client, because
+Google does not issue credentials to unofficial YouTube Music clients.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials),
+   enable the **YouTube Data API v3**.
+2. Create an OAuth client of type **Desktop app**.
+3. Press `g` in the app and paste the Client ID and Client Secret.
+
+The app then runs the device flow: it opens `google.com/device`, shows a code,
+and polls until you approve. Credentials and the token are stored under
+`~/.config/ytmusic-tui/` (mode `0600`). Press `6` to browse your playlists and
+liked songs; sign out from the same overlay.
 
 ---
 

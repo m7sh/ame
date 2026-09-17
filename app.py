@@ -18,7 +18,8 @@ from api import YTMusicAPI, Track, Playlist, Category
 from player import MPVPlayer
 from spectrum import CavaSpectrum
 from theme import OmarchyThemeManager, ThemeColors
-from ui.widgets import TopBar, PlayerBar, HelpScreen
+from ui.widgets import TopBar, PlayerBar, HelpScreen, Spectrum
+from ui.account import AccountScreen
 from ui.views import (
     TrendingView,
     RadioView,
@@ -26,6 +27,7 @@ from ui.views import (
     PlaylistDetailView,
     SearchView,
     QueueView,
+    LibraryView,
     PlayTrackMsg,
     QueueTrackMsg,
     StartRadioMsg,
@@ -41,6 +43,10 @@ class YTMusicApp(App):
     CSS_PATH = "styles.tcss"
     TITLE = "ytmusic-tui"
     SUB_TITLE = "guest mode"
+
+    # Keep the terminal-default background so the terminal's own transparency
+    # (Alacritty/kitty opacity) shows through. Hex accents stay truecolor.
+    ansi_color = True
 
     BINDINGS = [
         Binding("slash", "focus_search", "Search", show=False),
@@ -67,6 +73,7 @@ class YTMusicApp(App):
         Binding("escape", "handle_escape", "Back", show=False),
         Binding("t", "reload_theme", "Sync Theme", show=False),
         Binding("question_mark", "show_help", "Help", show=False),
+        Binding("g", "account", "Account", show=False),
         Binding("h", "toggle_help_bar", "Help bar", show=False),
         Binding("v", "toggle_visualizer", "Visualizer", show=False),
         Binding("q", "quit_app", "Quit", show=False),
@@ -75,6 +82,7 @@ class YTMusicApp(App):
         Binding("3", "switch_view_3", "Moods", show=False),
         Binding("4", "switch_view_4", "Search", show=False),
         Binding("5", "switch_view_5", "Queue", show=False),
+        Binding("6", "switch_view_6", "Library", show=False),
     ]
 
     def __init__(self) -> None:
@@ -106,6 +114,7 @@ class YTMusicApp(App):
         try:
             self.query_one("#top_bar", TopBar).refresh_theme()
             self.query_one("#player_bar", PlayerBar).refresh_theme()
+            self.query_one("#spectrum", Spectrum).refresh()
             view = self.query_one(f"#{self.active_view_id}")
             if hasattr(view, "refresh_theme"):
                 view.refresh_theme()
@@ -117,6 +126,7 @@ class YTMusicApp(App):
     # ------------------------------------------------------------------ #
     def compose(self) -> ComposeResult:
         yield TopBar(id="top_bar")
+        yield Spectrum(id="spectrum")
         with ContentSwitcher(initial="view_trending", id="content_switcher"):
             yield TrendingView(id="view_trending")
             yield RadioView(id="view_radio")
@@ -124,6 +134,7 @@ class YTMusicApp(App):
             yield PlaylistDetailView(id="view_playlist_detail")
             yield SearchView(id="view_search")
             yield QueueView(id="view_queue")
+            yield LibraryView(id="view_library")
         yield PlayerBar(id="player_bar")
 
     def on_mount(self) -> None:
@@ -143,7 +154,7 @@ class YTMusicApp(App):
             self.spectrum = CavaSpectrum(on_update=self._on_spectrum_bands)
             self.spectrum.start()
         else:
-            self.query_one("#player_bar", PlayerBar).toggle_visualizer()
+            self.query_one("#spectrum", Spectrum).display = False
 
         self._focus_content()
         self.load_initial_data()
@@ -236,7 +247,7 @@ class YTMusicApp(App):
         self._safe_call(self._set_spectrum_bands, bands)
 
     def _set_spectrum_bands(self, bands) -> None:
-        self.query_one("#player_bar", PlayerBar).set_bands(bands)
+        self.query_one("#spectrum", Spectrum).set_bands(bands)
 
     # ------------------------------------------------------------------ #
     # Background workers
@@ -345,6 +356,21 @@ class YTMusicApp(App):
             self._safe_call(self.notify, f"search failed: {e}", severity="error")
         self._safe_call(self._set_status, "")
 
+    @work(group="library_loader", exclusive=True, thread=True)
+    def load_library_worker(self) -> None:
+        if not self.api.authenticated:
+            return
+        self._safe_call(self._set_status, "loading your library…")
+        try:
+            playlists = self.api.get_library_playlists(limit=50)
+            liked = self.api.get_liked_songs(limit=200)
+            self._safe_call(
+                lambda: self.query_one("#view_library", LibraryView).populate(playlists, liked)
+            )
+        except Exception as e:
+            self._safe_call(self.notify, f"could not load library: {e}", severity="error")
+        self._safe_call(self._set_status, "")
+
     # ------------------------------------------------------------------ #
     # Navigation
     # ------------------------------------------------------------------ #
@@ -358,6 +384,9 @@ class YTMusicApp(App):
 
         if view_id == "view_queue":
             self.query_one("#view_queue", QueueView).set_queue(list(self.player.queue))
+
+        if view_id == "view_library" and self.api.authenticated:
+            self.load_library_worker()
 
         if focus:
             self._focus_content()
@@ -411,6 +440,9 @@ class YTMusicApp(App):
     # Global key handling
     # ------------------------------------------------------------------ #
     def on_key(self, event: events.Key) -> None:
+        # While an overlay is open, let it own the keyboard.
+        if len(self.screen_stack) > 1:
+            return
         if isinstance(self.focused, Input) and event.key == "escape":
             self._focus_content()
             event.prevent_default()
@@ -530,12 +562,35 @@ class YTMusicApp(App):
     def action_show_help(self) -> None:
         self.push_screen(HelpScreen(self.theme_manager.current_theme.name))
 
+    def action_account(self) -> None:
+        self.push_screen(AccountScreen())
+
+    def on_account_screen_signed_in(self, message: AccountScreen.SignedIn) -> None:
+        self.api.reload_auth()
+        if self.api.authenticated:
+            self.notify("signed in — loading your library", timeout=2)
+            self.switch_view("view_library")
+        else:
+            self.notify("signed in, but the client could not be loaded", severity="warning")
+
+    def on_account_screen_signed_out(self, message: AccountScreen.SignedOut) -> None:
+        self.api.reload_auth()
+        try:
+            self.query_one("#view_library", LibraryView).set_signed_out()
+        except Exception:
+            pass
+        self.notify("signed out", timeout=2)
+
     def action_toggle_help_bar(self) -> None:
         self.query_one("#player_bar", PlayerBar).toggle_help()
 
     def action_toggle_visualizer(self) -> None:
-        visible = self.query_one("#player_bar", PlayerBar).toggle_visualizer()
-        if visible and self.spectrum is None and CavaSpectrum.available():
+        try:
+            spectrum = self.query_one("#spectrum", Spectrum)
+        except Exception:
+            return
+        spectrum.display = not spectrum.display
+        if spectrum.display and self.spectrum is None and CavaSpectrum.available():
             self.spectrum = CavaSpectrum(on_update=self._on_spectrum_bands)
             self.spectrum.start()
 
@@ -562,6 +617,9 @@ class YTMusicApp(App):
 
     def action_switch_view_5(self) -> None:
         self.switch_view("view_queue")
+
+    def action_switch_view_6(self) -> None:
+        self.switch_view("view_library")
 
     def action_quit_app(self) -> None:
         self._stop_spectrum()

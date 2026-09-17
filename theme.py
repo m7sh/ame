@@ -144,23 +144,27 @@ class OmarchyThemeManager:
 
     @staticmethod
     def build_textual_theme(colors: ThemeColors, version: int = 0) -> Theme:
-        """Compile a palette into a native Textual Theme with custom variables."""
+        """Compile a palette into a native Textual Theme with custom variables.
+
+        The background and panel colors resolve to the terminal default so the
+        terminal's own background (and any opacity/transparency) shows through.
+        """
         return Theme(
             name=f"omarchy-synced-{version}",
             primary=colors.primary,
             secondary=colors.secondary,
             accent=colors.accent,
             foreground=colors.foreground,
-            background=colors.background,
+            background="ansi_default",
             surface=colors.surface,
-            panel=colors.panel,
+            panel="ansi_default",
             warning=colors.warning,
             error=colors.danger,
             success=colors.success,
             dark=colors.mode != "light",
             variables={
-                "ytm-bg": colors.background,
-                "ytm-panel": colors.panel,
+                "ytm-bg": "ansi_default",
+                "ytm-panel": "ansi_default",
                 "ytm-surface": colors.surface,
                 "ytm-hover": colors.surface_hover,
                 "ytm-active": colors.surface_active,
