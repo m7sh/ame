@@ -5,7 +5,7 @@ Each view fills the content area with a cliamp-style section divider and a
 track list, keeping the chrome to a minimum.
 """
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 from textual.app import ComposeResult
 from textual.widget import Widget
@@ -88,10 +88,66 @@ def _count(n: int, singular: str, plural: Optional[str] = None) -> str:
     return f"{n} {singular if n == 1 else (plural or singular + 's')}"
 
 
+def _apply_fixed_widths(table: DataTable, widths: List[Tuple[str, int]]) -> None:
+    """Pin column widths so the table never overflows its widget."""
+    try:
+        for key, width in widths:
+            column = table.columns.get(key)
+            if column is None:
+                continue
+            column.auto_width = False
+            column.width = max(1, width)
+        table.clear_cached_dimensions()
+        table._require_update_dimensions = True
+        table.refresh(layout=True)
+    except Exception:
+        pass
+
+
+def _track_widths(table: DataTable) -> List[Tuple[str, int]]:
+    """# | TITLE (flex) | ARTIST | TIME, fitted to the current width."""
+    total = table.size.width
+    if total <= 0:
+        return []
+    available = total - 2 * table.cell_padding * 4
+    num_w, time_w = 3, 7
+    artist_w = max(12, min(30, available // 4))
+    title_w = max(16, available - num_w - time_w - artist_w)
+    return [("num", num_w), ("title", title_w), ("artist", artist_w), ("time", time_w)]
+
+
+def _playlist_widths(table: DataTable) -> List[Tuple[str, int]]:
+    """# | NAME (flex) | META, fitted to the current width."""
+    total = table.size.width
+    if total <= 0:
+        return []
+    available = total - 2 * table.cell_padding * 3
+    num_w = 3
+    meta_w = max(12, min(30, available // 3))
+    title_w = max(16, available - num_w - meta_w)
+    return [("num", num_w), ("title", title_w), ("meta", meta_w)]
+
+
+class TableFitMixin:
+    """Re-pins table column widths on mount, after loading and on resize."""
+
+    def _fitted_tables(self) -> List[Tuple[DataTable, str]]:
+        return []
+
+    def _fit_tables(self) -> None:
+        for table, kind in self._fitted_tables():
+            widths = _track_widths(table) if kind == "track" else _playlist_widths(table)
+            if widths:
+                _apply_fixed_widths(table, widths)
+
+    def on_resize(self, event) -> None:
+        self._fit_tables()
+
+
 # --------------------------------------------------------------------------- #
 # 1. Trending
 # --------------------------------------------------------------------------- #
-class TrendingView(Widget):
+class TrendingView(TableFitMixin, Widget):
     """Top trending tracks and chart playlists."""
 
     def __init__(self, **kwargs):
@@ -110,12 +166,22 @@ class TrendingView(Widget):
 
     def on_mount(self) -> None:
         self.query_one("#trending_tracks_table", DataTable).add_columns(
-            "#", "TITLE", "ARTIST", "TIME"
+            ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
         )
         self.query_one("#trending_playlists_table", DataTable).add_columns(
-            "#", "PLAYLIST", "CURATOR"
+            ("#", "num"), ("PLAYLIST", "title"), ("CURATOR", "meta")
         )
         self.query_one("#trending_header", SectionHeader).set_content("trending")
+        self._fit_tables()
+
+    def _fitted_tables(self):
+        try:
+            return [
+                (self.query_one("#trending_tracks_table", DataTable), "track"),
+                (self.query_one("#trending_playlists_table", DataTable), "playlist"),
+            ]
+        except Exception:
+            return []
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -146,6 +212,7 @@ class TrendingView(Widget):
             "trending",
             [(_count(len(tracks), "song"), False), (_count(len(playlists), "chart"), False)],
         )
+        self._fit_tables()
 
     def get_selected_track(self) -> Optional[Track]:
         try:
@@ -184,7 +251,7 @@ class TrendingView(Widget):
 # --------------------------------------------------------------------------- #
 # 2. Radio
 # --------------------------------------------------------------------------- #
-class RadioView(Widget):
+class RadioView(TableFitMixin, Widget):
     """Algorithmic song radio recommendations."""
 
     def __init__(self, **kwargs):
@@ -199,11 +266,18 @@ class RadioView(Widget):
 
     def on_mount(self) -> None:
         self.query_one("#radio_tracks_table", DataTable).add_columns(
-            "#", "TITLE", "ARTIST", "TIME"
+            ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
         )
         self.query_one("#radio_header", SectionHeader).set_content(
             "radio", [("press r on a song", False)]
         )
+        self._fit_tables()
+
+    def _fitted_tables(self):
+        try:
+            return [(self.query_one("#radio_tracks_table", DataTable), "track")]
+        except Exception:
+            return []
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -225,6 +299,7 @@ class RadioView(Widget):
         for idx, tr in enumerate(tracks, 1):
             table.add_row(str(idx), tr.title, tr.artist, tr.display_duration,
                           key=f"radio_{tr.id}_{idx}")
+        self._fit_tables()
 
     def get_selected_track(self) -> Optional[Track]:
         try:
@@ -250,7 +325,7 @@ class RadioView(Widget):
 # --------------------------------------------------------------------------- #
 # 3. Moods & Playlists
 # --------------------------------------------------------------------------- #
-class MoodsPlaylistsView(Widget):
+class MoodsPlaylistsView(TableFitMixin, Widget):
     """Categories on the left, curated playlists on the right."""
 
     def __init__(self, **kwargs):
@@ -270,9 +345,16 @@ class MoodsPlaylistsView(Widget):
 
     def on_mount(self) -> None:
         self.query_one("#mood_playlists_table", DataTable).add_columns(
-            "#", "PLAYLIST", "TRACKS"
+            ("#", "num"), ("PLAYLIST", "title"), ("TRACKS", "meta")
         )
         self.query_one("#moods_header", SectionHeader).set_content("moods")
+        self._fit_tables()
+
+    def _fitted_tables(self):
+        try:
+            return [(self.query_one("#mood_playlists_table", DataTable), "playlist")]
+        except Exception:
+            return []
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -311,6 +393,7 @@ class MoodsPlaylistsView(Widget):
         for idx, p in enumerate(playlists, 1):
             table.add_row(str(idx), p.title, p.track_count or "—",
                           key=f"m_pl_{p.id}_{idx}")
+        self._fit_tables()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         idx_str = event.item.id or ""
@@ -345,7 +428,7 @@ class MoodsPlaylistsView(Widget):
 # --------------------------------------------------------------------------- #
 # 4. Playlist detail
 # --------------------------------------------------------------------------- #
-class PlaylistDetailView(Widget):
+class PlaylistDetailView(TableFitMixin, Widget):
     """Inspect a playlist's tracks."""
 
     def __init__(self, **kwargs):
@@ -360,9 +443,16 @@ class PlaylistDetailView(Widget):
 
     def on_mount(self) -> None:
         self.query_one("#pl_detail_table", DataTable).add_columns(
-            "#", "TITLE", "ARTIST", "TIME"
+            ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
         )
         self.query_one("#pl_header", SectionHeader).set_content("playlist")
+        self._fit_tables()
+
+    def _fitted_tables(self):
+        try:
+            return [(self.query_one("#pl_detail_table", DataTable), "track")]
+        except Exception:
+            return []
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -388,6 +478,7 @@ class PlaylistDetailView(Widget):
         for idx, tr in enumerate(tracks, 1):
             table.add_row(str(idx), tr.title, tr.artist, tr.display_duration,
                           key=f"plt_{tr.id}_{idx}")
+        self._fit_tables()
 
     def get_selected_track(self) -> Optional[Track]:
         try:
@@ -413,7 +504,7 @@ class PlaylistDetailView(Widget):
 # --------------------------------------------------------------------------- #
 # 5. Search
 # --------------------------------------------------------------------------- #
-class SearchView(Widget):
+class SearchView(TableFitMixin, Widget):
     """Search songs and public playlists."""
 
     def __init__(self, **kwargs):
@@ -433,12 +524,22 @@ class SearchView(Widget):
 
     def on_mount(self) -> None:
         self.query_one("#search_songs_table", DataTable).add_columns(
-            "#", "TITLE", "ARTIST", "TIME"
+            ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
         )
         self.query_one("#search_playlists_table", DataTable).add_columns(
-            "#", "PLAYLIST", "CURATOR"
+            ("#", "num"), ("PLAYLIST", "title"), ("CURATOR", "meta")
         )
         self.query_one("#search_header", SectionHeader).set_content("search")
+        self._fit_tables()
+
+    def _fitted_tables(self):
+        try:
+            return [
+                (self.query_one("#search_songs_table", DataTable), "track"),
+                (self.query_one("#search_playlists_table", DataTable), "playlist"),
+            ]
+        except Exception:
+            return []
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -474,6 +575,7 @@ class SearchView(Widget):
             "search",
             [(_count(len(songs), "song"), False), (_count(len(playlists), "playlist"), False)],
         )
+        self._fit_tables()
 
     def get_selected_track(self) -> Optional[Track]:
         try:
@@ -512,7 +614,7 @@ class SearchView(Widget):
 # --------------------------------------------------------------------------- #
 # 6. Queue
 # --------------------------------------------------------------------------- #
-class QueueView(Widget):
+class QueueView(TableFitMixin, Widget):
     """The active playback queue."""
 
     def __init__(self, **kwargs):
@@ -526,11 +628,18 @@ class QueueView(Widget):
 
     def on_mount(self) -> None:
         self.query_one("#queue_table", DataTable).add_columns(
-            "#", "TITLE", "ARTIST", "TIME"
+            ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
         )
         self.query_one("#queue_header", SectionHeader).set_content(
             "queue", [("empty", False)]
         )
+        self._fit_tables()
+
+    def _fitted_tables(self):
+        try:
+            return [(self.query_one("#queue_table", DataTable), "track")]
+        except Exception:
+            return []
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -555,6 +664,7 @@ class QueueView(Widget):
         for idx, tr in enumerate(queue, 1):
             table.add_row(str(idx), tr.title, tr.artist, tr.display_duration,
                           key=f"q_{tr.id}_{idx}")
+        self._fit_tables()
 
     def get_all_tracks(self) -> List[Track]:
         return list(self.queue_tracks)

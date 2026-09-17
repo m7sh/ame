@@ -50,9 +50,9 @@ DataTable {
     background: transparent;
     border: none;
     padding: 0 2;
-    scrollbar-size-vertical: 1;
-    scrollbar-color: $ytm-border;
-    scrollbar-background: transparent;
+    overflow-x: hidden;
+    scrollbar-size-vertical: 0;
+    scrollbar-size-horizontal: 0;
 }
 
 DataTable > .datatable--header {
@@ -134,6 +134,8 @@ Tab.-active {
     background: transparent;
     border: none;
     padding: 0;
+    overflow-x: hidden;
+    scrollbar-size-vertical: 0;
 }
 
 #categories_list > ListItem {
