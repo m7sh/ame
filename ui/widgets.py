@@ -112,8 +112,7 @@ class TopBar(Static):
         self._tab_spans = []
 
         text.append("  ")
-        wordmark = "Y T M U S I C" if width >= 96 else "Y T M"
-        text.append(wordmark, style=f"bold {t.accent}")
+        text.append("a m e", style=f"bold {t.accent}")
         text.append("   ")
 
         for index, (key, label, view_id) in enumerate(VIEWS):
