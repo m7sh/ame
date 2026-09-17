@@ -17,8 +17,7 @@ TopBar {
     dock: top;
     height: 2;
     background: $ytm-panel;
-    border-bottom: solid $ytm-border;
-    padding: 0;
+    padding: 0 0 1 0;
     content-align: left middle;
 }
 
@@ -127,7 +126,7 @@ Tab.-active {
     min-width: 22;
     height: 100%;
     background: transparent;
-    border-right: solid $ytm-border;
+    padding-right: 2;
 }
 
 #categories_list {
@@ -170,16 +169,17 @@ Tab.-active {
 /* Search input                                                        */
 /* ------------------------------------------------------------------ */
 #search_input {
-    height: 3;
+    height: 1;
     margin: 1 2 0 2;
     background: $ytm-panel;
     color: $ytm-fg;
-    border: round $ytm-border;
+    border: none;
     padding: 0 1;
 }
 
 #search_input:focus {
-    border: round $ytm-accent;
+    background: $ytm-hover;
+    color: $ytm-accent;
 }
 
 /* ------------------------------------------------------------------ */
@@ -189,8 +189,7 @@ PlayerBar {
     dock: bottom;
     height: auto;
     background: $ytm-panel;
-    border-top: solid $ytm-border;
-    padding: 0 2;
+    padding: 1 2 0 2;
     layout: vertical;
 }
 
@@ -239,9 +238,9 @@ HelpScreen {
     max-width: 96%;
     height: auto;
     max-height: 90%;
-    background: $ytm-panel;
-    border: round $ytm-border;
-    padding: 1 2;
+    background: $ytm-surface;
+    border: none;
+    padding: 1 3;
 }
 
 .help_title {
