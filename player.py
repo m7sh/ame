@@ -229,6 +229,14 @@ class MPVPlayer:
             stream_url, quality = self.resolver.resolve(track.id)
             self.current_stream_quality = quality
 
+            # Publish a human-readable title to mpv before loading the raw
+            # stream URL. Without this, mpv's media-title (and therefore the
+            # MPRIS metadata the Omarchy bar reads) falls back to the stream
+            # URL basename, e.g. "webm&fvip=55&keepalive=yes&t=...".
+            self._send_command(
+                ["set_property", "force-media-title", self._media_title(track)]
+            )
+
             # Send loadfile command to mpv
             self._send_command(["loadfile", stream_url, "replace"])
 
@@ -242,6 +250,13 @@ class MPVPlayer:
                 self.on_state_change(False, False, False)
             if self.on_message:
                 self.on_message(f"Playback error: {e}")
+
+    @staticmethod
+    def _media_title(track: Track) -> str:
+        """Human-readable title exposed to mpv/MPRIS for a track."""
+        if track.artist:
+            return f"{track.title} · {track.artist}"
+        return track.title
 
     def _prefetch_next_track(self) -> None:
         """Prefetch stream URL for the first item in queue in background."""
@@ -353,6 +368,7 @@ class MPVPlayer:
     def stop(self) -> None:
         """Stop playback and clear current track."""
         self._send_command(["stop"])
+        self._send_command(["set_property", "force-media-title", ""])
         self.is_playing = False
         self.is_paused = False
         self.is_buffering = False
