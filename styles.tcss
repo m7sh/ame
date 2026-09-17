@@ -37,10 +37,9 @@ TopBar {
     layout: vertical;
 }
 
-.view_meta {
+.section_header {
     height: 1;
-    padding: 0 1;
-    color: $ytm-muted;
+    padding: 0 2;
     background: transparent;
 }
 
@@ -51,7 +50,7 @@ DataTable {
     height: 1fr;
     background: transparent;
     border: none;
-    padding: 0 1;
+    padding: 0 2;
     scrollbar-size-vertical: 1;
     scrollbar-color: $ytm-border;
     scrollbar-background: transparent;
@@ -172,7 +171,7 @@ Tab.-active {
 /* ------------------------------------------------------------------ */
 #search_input {
     height: 3;
-    margin: 0 1 1 1;
+    margin: 1 2 0 2;
     background: $ytm-panel;
     color: $ytm-fg;
     border: round $ytm-border;
@@ -188,10 +187,10 @@ Tab.-active {
 /* ------------------------------------------------------------------ */
 PlayerBar {
     dock: bottom;
-    height: 3;
+    height: auto;
     background: $ytm-panel;
     border-top: solid $ytm-border;
-    padding: 0 1;
+    padding: 0 2;
     layout: vertical;
 }
 
@@ -206,12 +205,23 @@ PlayerBar {
     color: $ytm-fg;
 }
 
-#player_time {
+#player_meta {
     width: auto;
     color: $ytm-muted;
 }
 
 SeekBar {
+    height: 1;
+    width: 100%;
+}
+
+#player_spectrum {
+    height: 5;
+    width: 100%;
+    margin: 0 0 1 0;
+}
+
+#player_help {
     height: 1;
     width: 100%;
 }

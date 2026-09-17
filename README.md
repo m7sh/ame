@@ -16,13 +16,20 @@ one list, and a slim player — nothing else competing for attention.
   rules, block glyphs and reverse-style selection only.
 - **One screen at a time** — the sidebar and status badges are gone; views
   are switched from a single tab line or with `1`–`5`.
-- **Two-line player** — now-playing and time, then a full-width clickable
-  seek bar.
-- **Help on demand** — press `?` for the keybinding overlay instead of
-  leaving a permanent cheat sheet on screen.
+- **Three-line player** — now-playing, time and playback status, then a
+  full-width clickable seek bar, then a key-pill help bar.
+- **Help on demand** — press `?` for the keybinding overlay, or `h` to hide
+  the persistent help bar.
 - **Live Omarchy theme sync** — colors are injected as native Textual theme
   variables, so switching your desktop theme restyles the app instantly with
   no flicker and no file rewrites.
+- **Real spectrum visualizer** — `cava` taps the PipeWire monitor and drives
+  fractional-block bars with a green→yellow→red gradient. Press `v` to hide
+  it; it is omitted automatically when `cava` is not installed.
+
+The chrome takes its cues from [cliamp](https://github.com/bjarneo/cliamp):
+a letterspaced wordmark, bracketed chips, `▸─ section ──` dividers, a block
+volume meter and key pills in the help bar.
 
 ---
 
@@ -34,6 +41,7 @@ one list, and a slim player — nothing else competing for attention.
 - Full queue control: append, play-all, shuffle, remove and clear.
 - Asynchronous discovery and stream resolution — the UI never blocks.
 - Headless `mpv` playback over a JSON IPC socket with stream prefetching.
+- Real-time spectrum visualizer via `cava` (optional).
 
 ---
 
@@ -55,6 +63,8 @@ one list, and a slim player — nothing else competing for attention.
 | `s` / `c` | shuffle / clear the queue |
 | `/` | focus search |
 | `1` – `5` | jump to trending / radio / moods / search / queue |
+| `h` | show / hide the help bar |
+| `v` | show / hide the spectrum visualizer |
 | `esc` | back or close overlay |
 | `t` | re-sync the Omarchy theme |
 | `?` | toggle the keybinding overlay |
@@ -69,6 +79,13 @@ Requires `mpv` and `yt-dlp` on your `PATH`:
 ```bash
 sudo pacman -S mpv yt-dlp     # Arch / Omarchy
 sudo apt install mpv yt-dlp   # Debian / Ubuntu
+```
+
+`cava` is optional and only used for the spectrum visualizer:
+
+```bash
+sudo pacman -S cava           # Arch / Omarchy
+sudo apt install cava         # Debian / Ubuntu
 ```
 
 Then install the Python dependencies and run:
@@ -98,12 +115,13 @@ ytmusic-tui/
 ├── app.py            # Textual app: layout, bindings, workers, theme sync
 ├── api.py            # Guest-mode ytmusicapi client + yt-dlp stream resolver
 ├── player.py         # Headless mpv IPC client, queue state machine
+├── spectrum.py       # cava subprocess bridge for the spectrum visualizer
 ├── theme.py          # Omarchy palette detection -> native Textual Theme
 ├── styles.tcss       # Static stylesheet driven by theme CSS variables
 ├── requirements.txt
 ├── ytmusic-tui       # Launcher script
 └── ui/
-    ├── widgets.py    # TopBar, SeekBar, PlayerBar, HelpScreen
+    ├── widgets.py    # TopBar, SectionHeader, SeekBar, HelpBar, PlayerBar
     └── views.py      # Trending, Radio, Moods, Playlist, Search, Queue
 ```
 

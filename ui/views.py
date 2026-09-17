@@ -1,8 +1,8 @@
 """
 ui/views.py - Single-pane views for ytmusic-tui.
 
-Each view fills the content area and keeps chrome to a single, dim status
-line so the track list stays the focus of the screen.
+Each view fills the content area with a cliamp-style section divider and a
+track list, keeping the chrome to a minimum.
 """
 
 from typing import Optional, List, Dict
@@ -23,6 +23,7 @@ from textual.message import Message
 
 from api import Track, Playlist, Category, format_seconds
 from theme import ThemeColors
+from ui.widgets import SectionHeader
 
 
 # --------------------------------------------------------------------------- #
@@ -79,9 +80,12 @@ def _theme(widget: Widget) -> ThemeColors:
     return ThemeColors()
 
 
-def _meta(text: str, widget: Widget) -> str:
-    """Wrap a plain string in the muted status-line style."""
-    return f"[{_theme(widget).muted}]{text}[/]"
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _count(n: int, singular: str, plural: Optional[str] = None) -> str:
+    return f"{n} {singular if n == 1 else (plural or singular + 's')}"
 
 
 # --------------------------------------------------------------------------- #
@@ -97,7 +101,7 @@ class TrendingView(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
-            yield Static(_meta("loading charts…", self), id="trending_meta", classes="view_meta")
+            yield SectionHeader(id="trending_header", classes="section_header")
             with TabbedContent(initial="tab_trending_tracks", id="trending_tabs"):
                 with TabPane("songs", id="tab_trending_tracks"):
                     yield DataTable(id="trending_tracks_table", cursor_type="row")
@@ -111,6 +115,7 @@ class TrendingView(Widget):
         self.query_one("#trending_playlists_table", DataTable).add_columns(
             "#", "PLAYLIST", "CURATOR"
         )
+        self.query_one("#trending_header", SectionHeader).set_content("trending")
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -137,8 +142,9 @@ class TrendingView(Widget):
             pl_table.add_row(str(idx), p.title, p.author or "YouTube Music",
                              key=f"pl_{p.id}_{idx}")
 
-        self.query_one("#trending_meta", Static).update(
-            _meta(f"{len(tracks)} trending songs  ·  {len(playlists)} chart playlists", self)
+        self.query_one("#trending_header", SectionHeader).set_content(
+            "trending",
+            [(_count(len(tracks), "song"), False), (_count(len(playlists), "chart"), False)],
         )
 
     def get_selected_track(self) -> Optional[Track]:
@@ -172,7 +178,7 @@ class TrendingView(Widget):
                 self.post_message(OpenPlaylistMsg(self.playlists[event.cursor_row]))
 
     def refresh_theme(self) -> None:
-        self.populate_data(self.tracks, self.playlists)
+        self.query_one("#trending_header", SectionHeader).refresh()
 
 
 # --------------------------------------------------------------------------- #
@@ -188,15 +194,15 @@ class RadioView(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
-            yield Static(
-                _meta("highlight a song and press r to start a station", self),
-                id="radio_meta", classes="view_meta",
-            )
+            yield SectionHeader(id="radio_header", classes="section_header")
             yield DataTable(id="radio_tracks_table", cursor_type="row")
 
     def on_mount(self) -> None:
         self.query_one("#radio_tracks_table", DataTable).add_columns(
             "#", "TITLE", "ARTIST", "TIME"
+        )
+        self.query_one("#radio_header", SectionHeader).set_content(
+            "radio", [("press r on a song", False)]
         )
 
     def primary_widget(self) -> Optional[Widget]:
@@ -209,8 +215,9 @@ class RadioView(Widget):
         self.seed_track = seed
         self.tracks = tracks
 
-        self.query_one("#radio_meta", Static).update(
-            _meta(f"radio · {seed.title} — {seed.artist}  ·  {len(tracks)} tracks", self)
+        self.query_one("#radio_header", SectionHeader).set_content(
+            "radio",
+            [(_clip(seed.title, 40), True), (_count(len(tracks), "track"), False)],
         )
 
         table = self.query_one("#radio_tracks_table", DataTable)
@@ -237,8 +244,7 @@ class RadioView(Widget):
             self.post_message(PlayTrackMsg(tr, self.tracks[event.cursor_row + 1:]))
 
     def refresh_theme(self) -> None:
-        if self.seed_track:
-            self.set_radio_tracks(self.seed_track, self.tracks)
+        self.query_one("#radio_header", SectionHeader).refresh()
 
 
 # --------------------------------------------------------------------------- #
@@ -255,7 +261,7 @@ class MoodsPlaylistsView(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
-            yield Static(_meta("loading moods…", self), id="moods_meta", classes="view_meta")
+            yield SectionHeader(id="moods_header", classes="section_header")
             with Horizontal(id="moods_split"):
                 with Vertical(id="categories_pane"):
                     yield ListView(id="categories_list")
@@ -266,6 +272,7 @@ class MoodsPlaylistsView(Widget):
         self.query_one("#mood_playlists_table", DataTable).add_columns(
             "#", "PLAYLIST", "TRACKS"
         )
+        self.query_one("#moods_header", SectionHeader).set_content("moods")
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -286,12 +293,17 @@ class MoodsPlaylistsView(Widget):
         if self.categories:
             cat_list.index = 0
 
+        self.query_one("#moods_header", SectionHeader).set_content(
+            "moods", [(_count(len(self.categories), "category", "categories"), False)]
+        )
+
     def populate_playlists(self, category_name: str, playlists: List[Playlist]) -> None:
         self.current_playlists = playlists
         self.current_category = category_name
 
-        self.query_one("#moods_meta", Static).update(
-            _meta(f"{category_name}  ·  {len(playlists)} playlists  ·  enter to open", self)
+        self.query_one("#moods_header", SectionHeader).set_content(
+            "moods",
+            [(category_name, True), (_count(len(playlists), "playlist"), False)],
         )
 
         table = self.query_one("#mood_playlists_table", DataTable)
@@ -327,8 +339,7 @@ class MoodsPlaylistsView(Widget):
         return []
 
     def refresh_theme(self) -> None:
-        if self.current_category:
-            self.populate_playlists(self.current_category, self.current_playlists)
+        self.query_one("#moods_header", SectionHeader).refresh()
 
 
 # --------------------------------------------------------------------------- #
@@ -344,13 +355,14 @@ class PlaylistDetailView(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
-            yield Static(_meta("no playlist loaded", self), id="pl_meta", classes="view_meta")
+            yield SectionHeader(id="pl_header", classes="section_header")
             yield DataTable(id="pl_detail_table", cursor_type="row")
 
     def on_mount(self) -> None:
         self.query_one("#pl_detail_table", DataTable).add_columns(
             "#", "TITLE", "ARTIST", "TIME"
         )
+        self.query_one("#pl_header", SectionHeader).set_content("playlist")
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -362,9 +374,13 @@ class PlaylistDetailView(Widget):
         self.playlist = playlist
         self.tracks = tracks
 
-        author = playlist.author or "YouTube Music"
-        self.query_one("#pl_meta", Static).update(
-            _meta(f"{playlist.title}  ·  {author}  ·  {len(tracks)} tracks  ·  P play all", self)
+        self.query_one("#pl_header", SectionHeader).set_content(
+            "playlist",
+            [
+                (_clip(playlist.title, 40), True),
+                (_clip(playlist.author or "YouTube Music", 24), False),
+                (_count(len(tracks), "track"), False),
+            ],
         )
 
         table = self.query_one("#pl_detail_table", DataTable)
@@ -391,8 +407,7 @@ class PlaylistDetailView(Widget):
             self.post_message(PlayTrackMsg(tr, self.tracks[event.cursor_row + 1:]))
 
     def refresh_theme(self) -> None:
-        if self.playlist:
-            self.set_playlist(self.playlist, self.tracks)
+        self.query_one("#pl_header", SectionHeader).refresh()
 
 
 # --------------------------------------------------------------------------- #
@@ -409,6 +424,7 @@ class SearchView(Widget):
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
             yield Input(placeholder="search songs, artists or playlists…", id="search_input")
+            yield SectionHeader(id="search_header", classes="section_header")
             with TabbedContent(initial="tab_search_songs", id="search_tabs"):
                 with TabPane("songs", id="tab_search_songs"):
                     yield DataTable(id="search_songs_table", cursor_type="row")
@@ -422,6 +438,7 @@ class SearchView(Widget):
         self.query_one("#search_playlists_table", DataTable).add_columns(
             "#", "PLAYLIST", "CURATOR"
         )
+        self.query_one("#search_header", SectionHeader).set_content("search")
 
     def primary_widget(self) -> Optional[Widget]:
         try:
@@ -452,6 +469,11 @@ class SearchView(Widget):
         for idx, p in enumerate(playlists, 1):
             p_table.add_row(str(idx), p.title, p.author or "Community",
                             key=f"sp_{p.id}_{idx}")
+
+        self.query_one("#search_header", SectionHeader).set_content(
+            "search",
+            [(_count(len(songs), "song"), False), (_count(len(playlists), "playlist"), False)],
+        )
 
     def get_selected_track(self) -> Optional[Track]:
         try:
@@ -484,7 +506,7 @@ class SearchView(Widget):
                 self.post_message(OpenPlaylistMsg(self.playlist_results[event.cursor_row]))
 
     def refresh_theme(self) -> None:
-        pass
+        self.query_one("#search_header", SectionHeader).refresh()
 
 
 # --------------------------------------------------------------------------- #
@@ -499,12 +521,15 @@ class QueueView(Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
-            yield Static(_meta("queue is empty", self), id="queue_meta", classes="view_meta")
+            yield SectionHeader(id="queue_header", classes="section_header")
             yield DataTable(id="queue_table", cursor_type="row")
 
     def on_mount(self) -> None:
         self.query_one("#queue_table", DataTable).add_columns(
             "#", "TITLE", "ARTIST", "TIME"
+        )
+        self.query_one("#queue_header", SectionHeader).set_content(
+            "queue", [("empty", False)]
         )
 
     def primary_widget(self) -> Optional[Widget]:
@@ -518,11 +543,12 @@ class QueueView(Widget):
 
         if queue:
             total = sum(tr.duration_seconds for tr in queue if tr.duration_seconds)
-            suffix = f"  ·  ~{format_seconds(total)}" if total else ""
-            meta = f"{len(queue)} tracks queued{suffix}  ·  enter to play  ·  d remove  ·  s shuffle  ·  c clear"
+            chips = [(_count(len(queue), "track"), True)]
+            if total:
+                chips.append((f"~{format_seconds(total)}", False))
         else:
-            meta = "queue is empty  ·  press a on any track to add it"
-        self.query_one("#queue_meta", Static).update(_meta(meta, self))
+            chips = [("empty", False)]
+        self.query_one("#queue_header", SectionHeader).set_content("queue", chips)
 
         table = self.query_one("#queue_table", DataTable)
         table.clear()
@@ -538,4 +564,4 @@ class QueueView(Widget):
             self.app.player.play_from_queue(event.cursor_row)
 
     def refresh_theme(self) -> None:
-        self.set_queue(self.queue_tracks)
+        self.query_one("#queue_header", SectionHeader).refresh()

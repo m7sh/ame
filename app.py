@@ -16,6 +16,7 @@ from textual import events
 
 from api import YTMusicAPI, Track, Playlist, Category
 from player import MPVPlayer
+from spectrum import CavaSpectrum
 from theme import OmarchyThemeManager, ThemeColors
 from ui.widgets import TopBar, PlayerBar, HelpScreen
 from ui.views import (
@@ -66,6 +67,8 @@ class YTMusicApp(App):
         Binding("escape", "handle_escape", "Back", show=False),
         Binding("t", "reload_theme", "Sync Theme", show=False),
         Binding("question_mark", "show_help", "Help", show=False),
+        Binding("h", "toggle_help_bar", "Help bar", show=False),
+        Binding("v", "toggle_visualizer", "Visualizer", show=False),
         Binding("q", "quit_app", "Quit", show=False),
         Binding("1", "switch_view_1", "Trending", show=False),
         Binding("2", "switch_view_2", "Radio", show=False),
@@ -82,6 +85,7 @@ class YTMusicApp(App):
 
         self.api = YTMusicAPI()
         self.player = MPVPlayer(resolver=self.api.resolver)
+        self.spectrum: Optional[CavaSpectrum] = None
 
         self.active_view_id = "view_trending"
         self.previous_view_id = "view_trending"
@@ -134,6 +138,12 @@ class YTMusicApp(App):
 
         self.set_interval(0.25, self._tick_progress)
         self.set_interval(1.5, self._check_theme_sync)
+
+        if CavaSpectrum.available():
+            self.spectrum = CavaSpectrum(on_update=self._on_spectrum_bands)
+            self.spectrum.start()
+        else:
+            self.query_one("#player_bar", PlayerBar).toggle_visualizer()
 
         self._focus_content()
         self.load_initial_data()
@@ -221,6 +231,12 @@ class YTMusicApp(App):
 
     def _on_player_message(self, msg: str) -> None:
         self._safe_call(self.notify, msg, severity="warning", timeout=4)
+
+    def _on_spectrum_bands(self, bands) -> None:
+        self._safe_call(self._set_spectrum_bands, bands)
+
+    def _set_spectrum_bands(self, bands) -> None:
+        self.query_one("#player_bar", PlayerBar).set_bands(bands)
 
     # ------------------------------------------------------------------ #
     # Background workers
@@ -512,7 +528,16 @@ class YTMusicApp(App):
         self.player.clear_queue()
 
     def action_show_help(self) -> None:
-        self.push_screen(HelpScreen())
+        self.push_screen(HelpScreen(self.theme_manager.current_theme.name))
+
+    def action_toggle_help_bar(self) -> None:
+        self.query_one("#player_bar", PlayerBar).toggle_help()
+
+    def action_toggle_visualizer(self) -> None:
+        visible = self.query_one("#player_bar", PlayerBar).toggle_visualizer()
+        if visible and self.spectrum is None and CavaSpectrum.available():
+            self.spectrum = CavaSpectrum(on_update=self._on_spectrum_bands)
+            self.spectrum.start()
 
     def action_handle_escape(self) -> None:
         if isinstance(self.focused, Input):
@@ -539,8 +564,17 @@ class YTMusicApp(App):
         self.switch_view("view_queue")
 
     def action_quit_app(self) -> None:
+        self._stop_spectrum()
         self.player.cleanup()
         self.exit()
+
+    def _stop_spectrum(self) -> None:
+        if self.spectrum is not None:
+            self.spectrum.stop()
+            self.spectrum = None
+
+    def on_unmount(self) -> None:
+        self._stop_spectrum()
 
 
 if __name__ == "__main__":
