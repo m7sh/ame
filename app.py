@@ -16,6 +16,7 @@ from textual import events
 
 from api import YTMusicAPI, Track, Playlist, Category
 from player import MPVPlayer
+from favourites import FavouritesStore
 from spectrum import CavaSpectrum
 from theme import OmarchyThemeManager, ThemeColors
 from ui.widgets import TopBar, PlayerBar, HelpScreen, Spectrum
@@ -25,6 +26,7 @@ from ui.views import (
     MoodsPlaylistsView,
     PlaylistDetailView,
     SearchView,
+    FavouritesView,
     QueueView,
     PlayTrackMsg,
     QueueTrackMsg,
@@ -59,6 +61,8 @@ class AmeApp(App):
         Binding("A", "queue_all", "Queue All", show=False),
         Binding("P", "play_all", "Play All", show=False),
         Binding("d", "remove_selected", "Remove", show=False),
+        Binding("f", "toggle_favourite", "Favourite", show=False),
+        Binding("F", "switch_view_favourites", "Favourites", show=False),
         Binding("R", "radio_selected", "Radio", show=False),
         Binding("plus", "volume_up", "Vol +", show=False),
         Binding("equals", "volume_up", "Vol +", show=False),
@@ -89,6 +93,7 @@ class AmeApp(App):
 
         self.api = YTMusicAPI()
         self.player = MPVPlayer(resolver=self.api.resolver)
+        self.favourites = FavouritesStore()
         self.spectrum: Optional[CavaSpectrum] = None
         self._visualizer_on = True
 
@@ -134,6 +139,7 @@ class AmeApp(App):
             yield MoodsPlaylistsView(id="view_moods")
             yield PlaylistDetailView(id="view_playlist_detail")
             yield SearchView(id="view_search")
+            yield FavouritesView(id="view_favourites")
             yield QueueView(id="view_queue")
         yield PlayerBar(id="player_bar")
 
@@ -146,6 +152,8 @@ class AmeApp(App):
         self.player.on_message = self._on_player_message
 
         self.query_one("#top_bar", TopBar).theme_name = self.theme_manager.current_theme.name
+
+        self._refresh_favourites()
 
         self.set_interval(0.25, self._tick_progress)
         self.set_interval(1.5, self._check_theme_sync)
@@ -520,6 +528,14 @@ class AmeApp(App):
         self.player.append_queue(tracks[1:])
 
     def action_remove_selected(self) -> None:
+        if self.active_view_id == "view_favourites":
+            track = self._get_highlighted_track()
+            if track is not None:
+                self.favourites.remove(track.id)
+                self._refresh_favourites()
+                self.notify(f"removed {track.title} from favourites", timeout=2)
+            return
+
         if self.active_view_id != "view_queue":
             return
         try:
@@ -528,6 +544,28 @@ class AmeApp(App):
             self.player.remove_from_queue(index)
         except Exception:
             pass
+
+    def action_toggle_favourite(self) -> None:
+        track = self._get_highlighted_track() or self.player.current_track
+        if track is None:
+            self.notify("nothing to favourite", severity="warning", timeout=2)
+            return
+        now_favourite = self.favourites.toggle(track)
+        self._refresh_favourites()
+        verb = "added to" if now_favourite else "removed from"
+        self.notify(f"{track.title} {verb} favourites", timeout=2)
+
+    def _refresh_favourites(self) -> None:
+        try:
+            self.query_one("#view_favourites", FavouritesView).set_favourites(
+                self.favourites.all()
+            )
+        except Exception:
+            pass
+
+    def action_switch_view_favourites(self) -> None:
+        self._refresh_favourites()
+        self.switch_view("view_favourites")
 
     def action_radio_selected(self) -> None:
         track = self._get_highlighted_track() or self.player.current_track

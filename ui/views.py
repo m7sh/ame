@@ -717,3 +717,79 @@ class QueueView(TableFitMixin, Widget):
 
     def refresh_theme(self) -> None:
         self.query_one("#queue_header", SectionHeader).refresh()
+
+
+# --------------------------------------------------------------------------- #
+# 7. Favourites
+# --------------------------------------------------------------------------- #
+class FavouritesView(TableFitMixin, Widget):
+    """Songs the user has starred, persisted across sessions."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tracks: List[Track] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="view_content_container"):
+            yield SectionHeader(id="favourites_header", classes="section_header")
+            yield DataTable(id="favourites_table", cursor_type="row")
+
+    def on_mount(self) -> None:
+        self.query_one("#favourites_table", DataTable).add_columns(
+            ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
+        )
+        self.query_one("#favourites_header", SectionHeader).set_content(
+            "favourites", [("press f on a song to add", False)]
+        )
+        self._fit_tables()
+
+    def _fitted_tables(self):
+        try:
+            return [(self.query_one("#favourites_table", DataTable), "track")]
+        except Exception:
+            return []
+
+    def primary_widget(self) -> Optional[Widget]:
+        try:
+            return self.query_one("#favourites_table", DataTable)
+        except Exception:
+            return None
+
+    def set_favourites(self, tracks: List[Track]) -> None:
+        self.tracks = list(tracks)
+
+        if self.tracks:
+            total = sum(tr.duration_seconds for tr in self.tracks if tr.duration_seconds)
+            chips = [(_count(len(self.tracks), "song"), True)]
+            if total:
+                chips.append((f"~{format_seconds(total)}", False))
+        else:
+            chips = [("press f on a song to add", False)]
+        self.query_one("#favourites_header", SectionHeader).set_content("favourites", chips)
+
+        table = self.query_one("#favourites_table", DataTable)
+        table.clear()
+        for idx, tr in enumerate(self.tracks, 1):
+            table.add_row(str(idx), tr.title, tr.artist, tr.display_duration,
+                          key=f"fav_{tr.id}_{idx}")
+        self._fit_tables()
+
+    def get_selected_track(self) -> Optional[Track]:
+        try:
+            table = self.query_one("#favourites_table", DataTable)
+            if 0 <= table.cursor_row < len(self.tracks):
+                return self.tracks[table.cursor_row]
+        except Exception:
+            pass
+        return None
+
+    def get_all_tracks(self) -> List[Track]:
+        return list(self.tracks)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if 0 <= event.cursor_row < len(self.tracks):
+            tr = self.tracks[event.cursor_row]
+            self.post_message(PlayTrackMsg(tr, self.tracks[event.cursor_row + 1:]))
+
+    def refresh_theme(self) -> None:
+        self.query_one("#favourites_header", SectionHeader).refresh()

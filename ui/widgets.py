@@ -28,6 +28,7 @@ VIEWS: List[Tuple[str, str, str]] = [
     ("r", "radio", "view_radio"),
     ("m", "moods", "view_moods"),
     ("s", "search", "view_search"),
+    ("F", "favourites", "view_favourites"),
     ("q", "queue", "view_queue"),
 ]
 
@@ -121,7 +122,10 @@ class TopBar(Static):
             start = text.cell_len
             active = view_id == self.active_view_id
             rest_style = t.foreground if active else t.muted
-            text.append(label[0], style=f"bold {t.accent}")
+            # The hotkey letter (``key``) is highlighted; the rest of the
+            # label follows it. Usually key == label[0], but not always
+            # (favourites uses Shift-F to avoid clashing with the f toggle).
+            text.append(key[0], style=f"bold {t.accent}")
             text.append(label[1:], style=rest_style)
             self._tab_spans.append((start, text.cell_len, view_id))
 
@@ -477,10 +481,12 @@ class HelpScreen(ModalScreen):
         ("A", "queue every track in view"),
         ("P", "play every track in view"),
         ("R", "start song radio"),
-        ("d", "remove highlighted from queue"),
+        ("f", "add / remove favourite"),
+        ("F", "open favourites"),
+        ("d", "remove from queue / favourites"),
         ("S / c", "shuffle / clear queue"),
         ("/", "focus search"),
-        ("t r m s q", "jump to view"),
+        ("t r m s F q", "jump to view"),
         ("v", "toggle the visualizer"),
         ("T", "sync Omarchy theme"),
         ("?", "toggle this help"),

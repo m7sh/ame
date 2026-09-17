@@ -15,8 +15,8 @@ one list, and a slim player — nothing else competing for attention.
 - **Terminal-native chrome** — no emoji, no boxes-within-boxes. Unicode
   rules, block glyphs and reverse-style selection only.
 - **One screen at a time** — the sidebar and status badges are gone; views
-  are switched from a single tab line, where each view's first letter is
-  highlighted and works as its shortcut (`t` `r` `m` `s` `q`).
+  are switched from a single tab line, where each view's hotkey is
+  highlighted and works as its shortcut (`t` `r` `m` `s` `F` `q`).
 - **Two-line player** — now-playing with time and playback status, then a
   full-width clickable seek bar. No key-hint bar; press `?` when you need the
   cheatsheet.
@@ -43,6 +43,8 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 
 - Zero authentication / guest mode (`YTMusic()` with no credentials).
 - Trending charts, mood and genre browsing, search and song radio.
+- Persistent favourites — star songs with `f` and revisit them from the
+  favourites view (`F`), saved to `~/.local/share/ame/favourites.json`.
 - Infinite radio plus continuous autoplay when the queue runs dry.
 - Full queue control: append, play-all, shuffle, remove and clear.
 - Asynchronous discovery and stream resolution — the UI never blocks.
@@ -65,10 +67,12 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `A` | queue every track in the current view |
 | `P` | play every track in the current view |
 | `R` | start a song radio from the highlighted track |
-| `d` | remove the highlighted track from the queue |
+| `f` | add / remove the highlighted (or playing) track from favourites |
+| `F` | open the favourites view |
+| `d` | remove the highlighted track from the queue or favourites |
 | `S` / `c` | shuffle / clear the queue |
 | `/` | focus search |
-| `t` / `r` / `m` / `s` / `q` | jump to trending / radio / moods / search / queue |
+| `t` / `r` / `m` / `s` / `F` / `q` | jump to trending / radio / moods / search / favourites / queue |
 | `v` | show / hide the spectrum visualizer |
 | `esc` | back or close overlay |
 | `T` | re-sync the Omarchy theme |
@@ -120,6 +124,7 @@ ame/
 ├── app.py            # Textual app: layout, bindings, workers, theme sync
 ├── api.py            # Guest-mode ytmusicapi client + yt-dlp stream resolver
 ├── player.py         # Headless mpv IPC client, queue state machine
+├── favourites.py     # JSON-backed persistent favourites store
 ├── spectrum.py       # cava subprocess bridge for the spectrum visualizer
 ├── theme.py          # Omarchy palette detection -> native Textual Theme
 ├── styles.tcss       # Static stylesheet driven by theme CSS variables
@@ -127,7 +132,7 @@ ame/
 ├── ame               # Launcher script
 └── ui/
     ├── widgets.py    # TopBar, SectionHeader, SeekBar, PlayerBar, Spectrum
-    └── views.py      # Trending, Radio, Moods, Playlist, Search, Queue
+    └── views.py      # Trending, Radio, Moods, Playlist, Search, Favourites, Queue
 ```
 
 ---
