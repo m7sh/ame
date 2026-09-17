@@ -67,11 +67,12 @@ class SelectCategoryMsg(Message):
 
 
 class ExecuteSearchMsg(Message):
-    """Fired when a search query is submitted."""
+    """Fired when a search query is submitted or updated while typing."""
 
-    def __init__(self, query: str):
+    def __init__(self, query: str, live: bool = False):
         super().__init__()
         self.query = query
+        self.live = live
 
 
 def _theme(widget: Widget) -> ThemeColors:
@@ -505,12 +506,19 @@ class PlaylistDetailView(TableFitMixin, Widget):
 # 5. Search
 # --------------------------------------------------------------------------- #
 class SearchView(TableFitMixin, Widget):
-    """Search songs and public playlists."""
+    """Search songs and public playlists, with live suggestions while typing."""
+
+    # Wait this long after the last keystroke before querying YouTube Music,
+    # so a burst of typing triggers a single request instead of one per key.
+    SEARCH_DEBOUNCE = 0.35
+    MIN_QUERY_LENGTH = 2
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.song_results: List[Track] = []
         self.playlist_results: List[Playlist] = []
+        self._search_timer = None
+        self._last_query = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
@@ -550,10 +558,44 @@ class SearchView(TableFitMixin, Widget):
         except Exception:
             return None
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        query = event.value.strip()
+        if query == self._last_query:
+            return
+        self._last_query = query
+
+        self._cancel_search_timer()
+
+        if not query:
+            self._clear_results()
+            return
+
+        if len(query) < self.MIN_QUERY_LENGTH:
+            return
+
+        self._search_timer = self.set_timer(
+            self.SEARCH_DEBOUNCE,
+            lambda: self.post_message(ExecuteSearchMsg(query, live=True)),
+        )
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         query = event.value.strip()
+        self._last_query = query
+        self._cancel_search_timer()
         if query:
-            self.post_message(ExecuteSearchMsg(query))
+            self.post_message(ExecuteSearchMsg(query, live=False))
+
+    def _cancel_search_timer(self) -> None:
+        if self._search_timer is not None:
+            self._search_timer.stop()
+            self._search_timer = None
+
+    def _clear_results(self) -> None:
+        self.song_results = []
+        self.playlist_results = []
+        self.query_one("#search_songs_table", DataTable).clear()
+        self.query_one("#search_playlists_table", DataTable).clear()
+        self.query_one("#search_header", SectionHeader).set_content("search")
 
     def set_results(self, songs: List[Track], playlists: List[Playlist]) -> None:
         self.song_results = songs

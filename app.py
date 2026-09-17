@@ -95,6 +95,10 @@ class AmeApp(App):
         self.active_view_id = "view_trending"
         self.previous_view_id = "view_trending"
 
+        # Incremented on every search request so stale results from an
+        # in-flight worker can be discarded when the query has moved on.
+        self._search_seq = 0
+
     # ------------------------------------------------------------------ #
     # Theme plumbing
     # ------------------------------------------------------------------ #
@@ -357,17 +361,27 @@ class AmeApp(App):
         self._safe_call(self._set_status, "")
 
     @work(group="search_loader", exclusive=True, thread=True)
-    def search_worker(self, query: str) -> None:
-        self._safe_call(self._set_status, f"searching “{query}”…")
+    def search_worker(self, query: str, live: bool = False, token: int = 0) -> None:
+        # Live suggestions stay quiet (no status flicker, no error popups) and
+        # fetch a smaller batch; an explicit submit gets the full result set.
+        if not live:
+            self._safe_call(self._set_status, f"searching “{query}”…")
         try:
-            songs = self.api.search_songs(query, limit=30)
-            playlists = self.api.search_playlists(query, limit=20)
-            self._safe_call(
-                lambda: self.query_one("#view_search", SearchView).set_results(songs, playlists)
-            )
+            songs = self.api.search_songs(query, limit=10 if live else 30)
+            playlists = self.api.search_playlists(query, limit=8 if live else 20)
+
+            def _apply() -> None:
+                if token and token != self._search_seq:
+                    return
+                self.query_one("#view_search", SearchView).set_results(songs, playlists)
+
+            self._safe_call(_apply)
         except Exception as e:
-            self._safe_call(self.notify, f"search failed: {e}", severity="error")
-        self._safe_call(self._set_status, "")
+            if not live:
+                self._safe_call(self.notify, f"search failed: {e}", severity="error")
+        finally:
+            if not live:
+                self._safe_call(self._set_status, "")
 
     # ------------------------------------------------------------------ #
     # Navigation
@@ -429,7 +443,8 @@ class AmeApp(App):
         self.load_category_playlists_worker(msg.category)
 
     def on_execute_search_msg(self, msg: ExecuteSearchMsg) -> None:
-        self.search_worker(msg.query)
+        self._search_seq += 1
+        self.search_worker(msg.query, msg.live, self._search_seq)
 
     # ------------------------------------------------------------------ #
     # Global key handling
