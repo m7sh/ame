@@ -1,11 +1,11 @@
 """
-ui/widgets.py - Minimal, terminal-native chrome for ytmusic-tui.
+ui/widgets.py - Minimal, terminal-native chrome for ame.
 
 The visual language borrows from cliamp: a letterspaced wordmark, bracketed
-chips, section dividers, a block volume meter, a full-width seek bar and a
-key-pill help bar.
+chips, section dividers, a block volume meter and a full-width seek bar.
 """
 
+import random
 from typing import List, Optional, Tuple
 
 from rich.text import Text
@@ -24,23 +24,11 @@ from theme import ThemeColors
 
 
 VIEWS: List[Tuple[str, str, str]] = [
-    ("1", "trending", "view_trending"),
-    ("2", "radio", "view_radio"),
-    ("3", "moods", "view_moods"),
-    ("4", "search", "view_search"),
-    ("5", "queue", "view_queue"),
-    ("6", "library", "view_library"),
-]
-
-HELP_HINTS: List[Tuple[str, str]] = [
-    ("Esc", "back"),
-    ("Space", "play/pause"),
-    ("n/p", "skip"),
-    ("←/→", "seek"),
-    ("a", "add"),
-    ("/", "search"),
-    ("?", "help"),
-    ("q", "quit"),
+    ("t", "trending", "view_trending"),
+    ("r", "radio", "view_radio"),
+    ("m", "moods", "view_moods"),
+    ("s", "search", "view_search"),
+    ("q", "queue", "view_queue"),
 ]
 
 
@@ -50,34 +38,17 @@ def _palette(widget: Widget) -> ThemeColors:
     return ThemeColors()
 
 
-def _contrast(hex_color: str) -> str:
-    """Pick black or white for readable text on a given background (WCAG-ish)."""
-    try:
-        value = int(hex_color.lstrip("#")[:6], 16)
-    except ValueError:
-        return "#ffffff"
-
-    def linear(channel: int) -> float:
-        component = channel / 255
-        if component <= 0.04045:
-            return component / 12.92
-        return ((component + 0.055) / 1.055) ** 2.4
-
-    luminance = (
-        0.2126 * linear(value >> 16)
-        + 0.7152 * linear((value >> 8) & 0xFF)
-        + 0.0722 * linear(value & 0xFF)
-    )
-    return "#000000" if luminance > 0.179 else "#ffffff"
-
-
 def _volume_meter(volume: int, cells: int = 8) -> str:
     """Block volume meter, e.g. ██████░░."""
     filled = max(0, min(cells, int(round((volume / 100.0) * cells))))
     return "█" * filled + "░" * (cells - filled)
 
 
-_BLOCKS = " ▁▂▃▄▅▆▇█"
+# Matrix digital rain: half-width katakana + digits (all single-cell glyphs).
+_MATRIX_GLYPHS = (
+    "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"
+    "0123456789"
+)
 
 
 def _lerp_hex(start: str, end: str, factor: float) -> str:
@@ -95,13 +66,6 @@ def _lerp_hex(start: str, end: str, factor: float) -> str:
         vb = (b >> shift) & 0xFF
         channels.append(int(round(va + (vb - va) * factor)))
     return "#{:02x}{:02x}{:02x}".format(*channels)
-
-
-def _spectrum_color(t: ThemeColors, fraction: float) -> str:
-    """Vertical gradient: green low, yellow mid, red high."""
-    if fraction < 0.5:
-        return _lerp_hex(t.success, t.warning, fraction / 0.5)
-    return _lerp_hex(t.warning, t.danger, (fraction - 0.5) / 0.5)
 
 
 def _sample(bands: List[float], index: int, count: int) -> float:
@@ -156,8 +120,9 @@ class TopBar(Static):
                 text.append("  ")
             start = text.cell_len
             active = view_id == self.active_view_id
-            style = f"bold {t.accent}" if active else t.muted
-            text.append(f"{key} {label}", style=style)
+            rest_style = t.foreground if active else t.muted
+            text.append(label[0], style=f"bold {t.accent}")
+            text.append(label[1:], style=rest_style)
             self._tab_spans.append((start, text.cell_len, view_id))
 
         if self.status:
@@ -229,47 +194,100 @@ class SectionHeader(Static):
 
 
 class Spectrum(Static):
-    """cava-driven spectrum bars with fractional blocks and a vertical gradient."""
+    """cava-driven Matrix digital rain.
+
+    Each terminal column is a falling stream of katakana/digit glyphs. The
+    audio band for that column sets its fall speed and trail length, so loud
+    frequencies streak faster and longer while quiet ones barely drip. The
+    leading glyph glows near-white and the trail fades from the theme accent
+    into the background. The widget is only shown while audio is playing.
+    """
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._bands: List[float] = []
+        self._columns: List[dict] = []
+        self._width = 0
+        self._height = 0
+        self._rng = random.Random()
 
     def set_bands(self, bands: List[float]) -> None:
         self._bands = bands
+        self._advance()
         self.refresh()
 
-    def render(self) -> Text:
+    def _matrix_colors(self) -> Tuple[str, str, str]:
+        """Derive the rain palette from the active theme: (head, bright, dim)."""
         t = _palette(self)
-        width = self.size.width
-        height = self.size.height
+        base = t.accent or t.primary or t.success
+        head = _lerp_hex(base, "#ffffff", 0.72)
+        dim = _lerp_hex(base, t.background, 0.88)
+        return head, base, dim
+
+    def _ensure_columns(self) -> None:
+        width = max(0, self.size.width)
+        height = max(1, self.size.height)
+        if width == self._width and height == self._height and self._columns:
+            return
+        self._width = width
+        self._height = height
+        self._columns = [self._spawn_column(seeded=True) for _ in range(width)]
+
+    def _spawn_column(self, seeded: bool = False) -> dict:
+        height = self._height or 1
+        head = self._rng.uniform(-height, height) if seeded else self._rng.uniform(-height, 0)
+        trail = self._rng.randint(3, max(4, height))
+        return {
+            "head": head,
+            "speed": self._rng.uniform(0.2, 0.5),
+            "trail": trail,
+            "chars": [self._rng.choice(_MATRIX_GLYPHS) for _ in range(height + trail + 4)],
+        }
+
+    def _advance(self) -> None:
+        self._ensure_columns()
+        height = self._height or 1
+        count = len(self._columns)
+        for index, column in enumerate(self._columns):
+            amplitude = _sample(self._bands, index, count)
+            column["speed"] = 0.15 + amplitude * 1.5
+            column["trail"] = 3 + int(amplitude * max(3, height))
+            column["head"] += column["speed"]
+
+            chars = column["chars"]
+            if chars and self._rng.random() < 0.2:
+                chars[self._rng.randrange(len(chars))] = self._rng.choice(_MATRIX_GLYPHS)
+
+            if column["head"] - column["trail"] > height:
+                self._columns[index] = self._spawn_column()
+
+    def render(self) -> Text:
+        self._ensure_columns()
+        width = self._width
+        height = self._height
         text = Text(no_wrap=True, overflow="crop")
-        if width < 3 or height < 1:
+        if width < 1 or height < 1:
             return text
 
-        bar_count = max(1, min(48, width // 4))
-        bar_width = max(1, (width - (bar_count - 1)) // bar_count)
-        bands = self._bands
+        head_color, bright, dim = self._matrix_colors()
 
         for row in range(height):
             if row:
                 text.append("\n")
-            row_bottom = (height - 1 - row) / height
-            span = 1.0 / height
-            color = _spectrum_color(t, row_bottom)
-
-            used = 0
-            for index in range(bar_count):
-                level = _sample(bands, index, bar_count)
-                fill = (level - row_bottom) / span
-                block = _BLOCKS[int(round(max(0.0, min(1.0, fill)) * 8))]
-                text.append(block * bar_width, style=color)
-                used += bar_width
-                if index < bar_count - 1:
+            for column in self._columns:
+                distance = column["head"] - row
+                trail = column["trail"]
+                if distance < 0 or distance > trail:
                     text.append(" ")
-                    used += 1
-            if used < width:
-                text.append(" " * (width - used))
+                    continue
+
+                chars = column["chars"]
+                glyph = chars[row % len(chars)] if chars else " "
+                if distance < 1:
+                    color = head_color
+                else:
+                    color = _lerp_hex(bright, dim, distance / trail)
+                text.append(glyph, style=color)
 
         return text
 
@@ -331,26 +349,8 @@ class SeekBar(Static):
             event.stop()
 
 
-class HelpBar(Static):
-    """Key pills followed by dim labels, cliamp style."""
-
-    def render(self) -> Text:
-        t = _palette(self)
-        text = Text(no_wrap=True, overflow="crop")
-        key_fg = _contrast(t.accent)
-        for index, (key, label) in enumerate(HELP_HINTS):
-            if index:
-                text.append("  ")
-            text.append(f" {key} ", style=f"bold {key_fg} on {t.accent}")
-            text.append(f" {label}", style=t.muted)
-        return text
-
-    def refresh_theme(self) -> None:
-        self.refresh()
-
-
 class PlayerBar(Widget):
-    """Now playing, time + status, seek bar and the help bar."""
+    """Now playing, time + status and the seek bar."""
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -359,14 +359,12 @@ class PlayerBar(Widget):
         self._pos: float = 0.0
         self._dur: float = 0.0
         self._state: Tuple[bool, bool, bool] = (False, False, False)
-        self.help_visible: bool = True
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="player_row"):
             yield Static("", id="player_now")
             yield Static("", id="player_meta")
         yield SeekBar(id="player_seek")
-        yield HelpBar(id="player_help")
 
     def on_mount(self) -> None:
         self._render_now()
@@ -450,22 +448,13 @@ class PlayerBar(Widget):
         self._render_now()
         self._render_meta()
 
-    def toggle_help(self) -> bool:
-        self.help_visible = not self.help_visible
-        try:
-            self.query_one("#player_help", HelpBar).display = self.help_visible
-        except Exception:
-            pass
-        return self.help_visible
-
     def refresh_theme(self) -> None:
         self._render_now()
         self._render_meta()
-        for selector in ("#player_seek", "#player_help"):
-            try:
-                self.query_one(selector).refresh()
-            except Exception:
-                pass
+        try:
+            self.query_one("#player_seek", SeekBar).refresh()
+        except Exception:
+            pass
 
 
 class HelpScreen(ModalScreen):
@@ -487,18 +476,15 @@ class HelpScreen(ModalScreen):
         ("a", "append highlighted to queue"),
         ("A", "queue every track in view"),
         ("P", "play every track in view"),
-        ("r", "start song radio"),
+        ("R", "start song radio"),
         ("d", "remove highlighted from queue"),
-        ("s / c", "shuffle / clear queue"),
+        ("S / c", "shuffle / clear queue"),
         ("/", "focus search"),
-        ("1 - 5", "jump to view"),
-        ("6", "library (signed in)"),
-        ("g", "sign in / account"),
-        ("h", "toggle the help bar"),
+        ("t r m s q", "jump to view"),
         ("v", "toggle the visualizer"),
-        ("t", "sync Omarchy theme"),
+        ("T", "sync Omarchy theme"),
         ("?", "toggle this help"),
-        ("q", "quit"),
+        ("Q", "quit"),
     ]
 
     def __init__(self, theme_name: str = "", **kwargs) -> None:

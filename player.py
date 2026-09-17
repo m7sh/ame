@@ -6,7 +6,6 @@ stream prefetching, volume control, seeking, and continuous autoplay triggers.
 """
 
 import os
-import sys
 import time
 import json
 import uuid
@@ -26,7 +25,7 @@ class MPVPlayer:
 
     def __init__(self, resolver: Optional[StreamResolver] = None):
         self.resolver = resolver or StreamResolver()
-        self.sock_path = f"/tmp/ytm_mpv_{os.getpid()}_{uuid.uuid4().hex[:6]}.sock"
+        self.sock_path = f"/tmp/ame_mpv_{os.getpid()}_{uuid.uuid4().hex[:6]}.sock"
         self.proc: Optional[subprocess.Popen] = None
         self.sock: Optional[socket.socket] = None
         self.sock_file = None

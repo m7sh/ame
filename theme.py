@@ -144,39 +144,35 @@ class OmarchyThemeManager:
 
     @staticmethod
     def build_textual_theme(colors: ThemeColors, version: int = 0) -> Theme:
-        """Compile a palette into a native Textual Theme with custom variables.
-
-        The background and panel colors resolve to the terminal default so the
-        terminal's own background (and any opacity/transparency) shows through.
-        """
+        """Compile a palette into a native Textual Theme with custom variables."""
         return Theme(
             name=f"omarchy-synced-{version}",
             primary=colors.primary,
             secondary=colors.secondary,
             accent=colors.accent,
             foreground=colors.foreground,
-            background="ansi_default",
+            background=colors.background,
             surface=colors.surface,
-            panel="ansi_default",
+            panel=colors.panel,
             warning=colors.warning,
             error=colors.danger,
             success=colors.success,
             dark=colors.mode != "light",
             variables={
-                "ytm-bg": "ansi_default",
-                "ytm-panel": "ansi_default",
-                "ytm-surface": colors.surface,
-                "ytm-hover": colors.surface_hover,
-                "ytm-active": colors.surface_active,
-                "ytm-border": colors.border,
-                "ytm-fg": colors.foreground,
-                "ytm-muted": colors.muted,
-                "ytm-accent": colors.accent,
-                "ytm-primary": colors.primary,
-                "ytm-secondary": colors.secondary,
-                "ytm-success": colors.success,
-                "ytm-warning": colors.warning,
-                "ytm-danger": colors.danger,
-                "ytm-blue": colors.blue,
+                "ame-bg": colors.background,
+                "ame-panel": colors.panel,
+                "ame-surface": colors.surface,
+                "ame-hover": colors.surface_hover,
+                "ame-active": colors.surface_active,
+                "ame-border": colors.border,
+                "ame-fg": colors.foreground,
+                "ame-muted": colors.muted,
+                "ame-accent": colors.accent,
+                "ame-primary": colors.primary,
+                "ame-secondary": colors.secondary,
+                "ame-success": colors.success,
+                "ame-warning": colors.warning,
+                "ame-danger": colors.danger,
+                "ame-blue": colors.blue,
             },
         )

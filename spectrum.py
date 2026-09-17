@@ -1,5 +1,5 @@
 """
-spectrum.py - Real-time audio spectrum source for ytmusic-tui.
+spectrum.py - Real-time audio spectrum source for ame.
 
 Spawns ``cava`` with a private raw-output config, reads its ASCII band values
 from stdout on a background thread and forwards them to a callback. cava taps
@@ -81,7 +81,7 @@ class CavaSpectrum:
         return True
 
     def _write_config(self) -> None:
-        fd, path = tempfile.mkstemp(prefix="ytm_cava_", suffix=".conf")
+        fd, path = tempfile.mkstemp(prefix="ame_cava_", suffix=".conf")
         os.close(fd)
         self._config_path = path
         with open(path, "w", encoding="utf-8") as handle:

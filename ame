@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launcher script for YouTube Music TUI Player
+# Launcher script for ame — terminal YouTube Music player
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE" ]; do
     DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"

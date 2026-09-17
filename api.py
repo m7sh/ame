@@ -12,8 +12,6 @@ from typing import List, Dict, Any, Tuple
 from ytmusicapi import YTMusic
 import yt_dlp
 
-from auth import auth_kwargs
-
 
 def parse_duration(val: Any) -> Tuple[str, int]:
     """Parse various duration formats into (formatted_str, seconds)."""
@@ -175,88 +173,12 @@ class StreamResolver:
 
 
 class YTMusicAPI:
-    """YouTube Music API client: guest mode by default, OAuth when signed in."""
+    """Guest-mode YouTube Music API client with helper parsing methods."""
 
     def __init__(self):
+        # Guest mode - zero auth required!
+        self.yt = YTMusic()
         self.resolver = StreamResolver()
-        self.yt = YTMusic()
-        self.authenticated = False
-        self.reload_auth()
-
-    def reload_auth(self) -> bool:
-        """Rebuild the client, using saved OAuth credentials when present."""
-        try:
-            kwargs = auth_kwargs()
-        except Exception:
-            kwargs = None
-
-        if kwargs:
-            try:
-                self.yt = YTMusic(**kwargs)
-                self.authenticated = True
-                return True
-            except Exception:
-                pass
-
-        self.yt = YTMusic()
-        self.authenticated = False
-        return False
-
-    # --- Authenticated library ---
-
-    def get_library_playlists(self, limit: int = 50) -> List[Playlist]:
-        """The signed-in user's library playlists (empty when signed out)."""
-        if not self.authenticated:
-            return []
-
-        playlists: List[Playlist] = []
-        for p in self.yt.get_library_playlists(limit=limit):
-            pid = p.get("playlistId")
-            if not pid:
-                continue
-            thumbs = p.get("thumbnails", [])
-            playlists.append(
-                Playlist(
-                    id=pid,
-                    title=p.get("title", "Playlist"),
-                    author="Your Library",
-                    track_count=str(p.get("count") or ""),
-                    thumbnail=thumbs[-1]["url"] if thumbs else "",
-                    raw=p,
-                )
-            )
-        return playlists
-
-    def get_liked_songs(self, limit: int = 200) -> List[Track]:
-        """The signed-in user's liked songs (empty when signed out)."""
-        if not self.authenticated:
-            return []
-
-        data = self.yt.get_liked_songs(limit=limit)
-        tracks: List[Track] = []
-        for t in data.get("tracks", []):
-            vid = t.get("videoId")
-            if not vid:
-                continue
-
-            dur_str, dur_sec = parse_duration(t.get("duration") or t.get("duration_seconds"))
-            album_raw = t.get("album")
-            album_name = album_raw.get("name", "") if isinstance(album_raw, dict) else (album_raw or "")
-            thumbs = t.get("thumbnails", [])
-
-            tracks.append(
-                Track(
-                    id=vid,
-                    title=t.get("title", "Unknown Track"),
-                    artist=extract_artists_str(t.get("artists")),
-                    album=album_name,
-                    duration=dur_str,
-                    duration_seconds=dur_sec,
-                    thumbnail=thumbs[-1]["url"] if thumbs else "",
-                    raw=t,
-                )
-            )
-        return tracks
 
     def get_charts(self, country: str = "US") -> Tuple[List[Track], List[Playlist]]:
         """
