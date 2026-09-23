@@ -150,8 +150,10 @@ class AmeApp(App):
         self.player.on_queue_change = self._on_player_queue_change
         self.player.on_autoplay_trigger = self._on_player_autoplay_trigger
         self.player.on_message = self._on_player_message
+        self.player.on_volume_change = self._on_player_volume_change
 
         self.query_one("#top_bar", TopBar).theme_name = self.theme_manager.current_theme.name
+        self.query_one("#top_bar", TopBar).volume = self.player.volume
 
         self._refresh_favourites()
 
@@ -252,6 +254,9 @@ class AmeApp(App):
 
     def _on_player_message(self, msg: str) -> None:
         self._safe_call(self.notify, msg, severity="warning", timeout=4)
+
+    def _on_player_volume_change(self, volume: int) -> None:
+        self._safe_call(lambda: setattr(self.query_one("#top_bar", TopBar), "volume", volume))
 
     def _on_spectrum_bands(self, bands) -> None:
         self._safe_call(self._set_spectrum_bands, bands)
@@ -588,9 +593,11 @@ class AmeApp(App):
 
     def action_volume_up(self) -> None:
         self.player.adjust_volume(5)
+        self.query_one("#top_bar", TopBar).volume = self.player.volume
 
     def action_volume_down(self) -> None:
         self.player.adjust_volume(-5)
+        self.query_one("#top_bar", TopBar).volume = self.player.volume
 
     def action_seek_forward(self) -> None:
         self.player.seek(5.0)
