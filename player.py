@@ -55,6 +55,7 @@ class MPVPlayer:
         self.on_queue_change: Optional[Callable[[], None]] = None
         self.on_autoplay_trigger: Optional[Callable[[Track], None]] = None
         self.on_message: Optional[Callable[[str], None]] = None
+        self.on_volume_change: Optional[Callable[[int], None]] = None
 
         # Start mpv process and IPC connection
         self._start_mpv()
@@ -164,6 +165,8 @@ class MPVPlayer:
 
                     elif prop_name == "volume" and data is not None:
                         self.volume = int(round(float(data)))
+                        if self.on_volume_change:
+                            self.on_volume_change(self.volume)
 
                 elif event == "start-file":
                     self.is_buffering = True
