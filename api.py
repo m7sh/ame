@@ -7,8 +7,9 @@ Resolves direct high-fidelity audio streams using yt-dlp with in-memory caching.
 
 import time
 import subprocess
+import random
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from ytmusicapi import YTMusic
 import yt_dlp
 
@@ -180,12 +181,143 @@ class YTMusicAPI:
         self.yt = YTMusic()
         self.resolver = StreamResolver()
 
+    def get_trending_songs(self, limit: int = 40) -> List[Track]:
+        """
+        Fetch real-time trending songs from YouTube Music Explore & Charts.
+        Unlike static chart playlists, this fetches dynamic live trending tracks.
+        """
+        tracks: List[Track] = []
+        seen: set = set()
+
+        try:
+            explore = self.yt.get_explore()
+            trending_raw = explore.get("trending", {})
+
+            # 1. If YouTube Music provides a dynamic trending playlist, extract tracks from it
+            pl_id = trending_raw.get("playlist") if isinstance(trending_raw, dict) else None
+            if pl_id:
+                try:
+                    _, pl_tracks = self.get_playlist(pl_id, limit=limit)
+                    for tr in pl_tracks:
+                        if tr.id not in seen:
+                            seen.add(tr.id)
+                            tracks.append(tr)
+                except Exception:
+                    pass
+
+            # 2. Extract direct trending items from explore
+            items = trending_raw.get("items", []) if isinstance(trending_raw, dict) else trending_raw
+            if isinstance(items, list):
+                for item in items:
+                    vid = item.get("videoId")
+                    if vid and vid not in seen and len(tracks) < limit:
+                        seen.add(vid)
+                        dur_str, dur_sec = parse_duration(item.get("length") or item.get("duration"))
+                        album_val = item.get("album")
+                        album_name = album_val.get("name", "") if isinstance(album_val, dict) else (album_val or "")
+                        tracks.append(
+                            Track(
+                                id=vid,
+                                title=item.get("title", "Unknown Track"),
+                                artist=extract_artists_str(item.get("artists")),
+                                album=album_name,
+                                duration=dur_str,
+                                duration_seconds=dur_sec,
+                                raw=item,
+                            )
+                        )
+        except Exception:
+            pass
+
+        # 3. Fallback to chart playlist if explore didn't yield enough tracks
+        if len(tracks) < 10:
+            try:
+                charts = self.yt.get_charts()
+                playlists_raw = charts.get("videos", [])
+                fallback_id = playlists_raw[0].get("playlistId") if playlists_raw else "PL4fGSI1pDJn6t3TXLGiiJdD-sZbrG3tG0"
+                _, fallback_tracks = self.get_playlist(fallback_id, limit=limit)
+                for tr in fallback_tracks:
+                    if tr.id not in seen and len(tracks) < limit:
+                        seen.add(tr.id)
+                        tracks.append(tr)
+            except Exception:
+                pass
+
+        return tracks[:limit]
+
+    def get_recommendations(
+        self,
+        favourites: Optional[List[Track]] = None,
+        history: Optional[List[Track]] = None,
+        limit: int = 50,
+    ) -> List[Track]:
+        """
+        Generate dynamic AI & algorithmic recommendations.
+        Seeds from the user's favourites and recent playback history when available,
+        combined with YouTube Music's radio recommendation algorithm and
+        live discovery picks.
+        """
+        recommended_tracks: List[Track] = []
+        seen_ids: set = set()
+
+        # Collect user seeds (favourites prioritized, recent history secondary)
+        user_seeds: List[Track] = []
+        if favourites:
+            user_seeds.extend(favourites)
+            for f in favourites:
+                seen_ids.add(f.id)
+
+        if history:
+            for h in reversed(history[-10:]):
+                if h.id not in seen_ids:
+                    user_seeds.append(h)
+
+        # 1. Algorithmic recommendations from user seeds
+        if user_seeds:
+            sample_count = min(len(user_seeds), 3)
+            sampled_seeds = random.sample(user_seeds, sample_count)
+            for seed in sampled_seeds:
+                try:
+                    radio_tracks = self.get_radio(seed.id, limit=20)
+                    for tr in radio_tracks:
+                        if tr.id not in seen_ids:
+                            seen_ids.add(tr.id)
+                            recommended_tracks.append(tr)
+                except Exception:
+                    pass
+
+        # 2. If more tracks are needed (or user has no favourites yet), seed from live trending
+        if len(recommended_tracks) < limit:
+            try:
+                trending_tracks = self.get_trending_songs(limit=25)
+                if trending_tracks:
+                    sample_explore = random.sample(trending_tracks, min(len(trending_tracks), 2))
+                    for tr_seed in sample_explore:
+                        try:
+                            radio_tracks = self.get_radio(tr_seed.id, limit=20)
+                            for tr in radio_tracks:
+                                if tr.id not in seen_ids and len(recommended_tracks) < limit:
+                                    seen_ids.add(tr.id)
+                                    recommended_tracks.append(tr)
+                        except Exception:
+                            pass
+
+                for tr in trending_tracks:
+                    if tr.id not in seen_ids and len(recommended_tracks) < limit:
+                        seen_ids.add(tr.id)
+                        recommended_tracks.append(tr)
+            except Exception:
+                pass
+
+        # Shuffle recommendations to provide a dynamic mix on each load
+        random.shuffle(recommended_tracks)
+        return recommended_tracks[:limit]
+
     def get_charts(self, country: str = "US") -> Tuple[List[Track], List[Playlist]]:
         """
         Fetch top trending songs and chart playlists.
         Returns: (top_tracks, chart_playlists)
         """
-        top_tracks: List[Track] = []
         chart_playlists: List[Playlist] = []
 
         try:
@@ -211,17 +343,7 @@ class YTMusicAPI:
                     )
                 )
 
-        # Use the first chart playlist (usually Daily Top Music Videos or Top 100) to populate tracks
-        primary_playlist_id = "PL4fGSI1pDJn6t3TXLGiiJdD-sZbrG3tG0"  # Default global top
-        if chart_playlists:
-            primary_playlist_id = chart_playlists[0].id
-
-        try:
-            _, tracks = self.get_playlist(primary_playlist_id, limit=50)
-            top_tracks = tracks
-        except Exception:
-            pass
-
+        top_tracks = self.get_trending_songs(limit=50)
         return top_tracks, chart_playlists
 
     def get_mood_categories(self) -> Dict[str, List[Category]]:
@@ -414,7 +536,10 @@ class YTMusicAPI:
         Fetch algorithmic recommendations / watch playlist based on a track's video_id.
         """
         tracks: List[Track] = []
-        wp = self.yt.get_watch_playlist(videoId=video_id, limit=limit)
+        try:
+            wp = self.yt.get_watch_playlist(videoId=video_id, limit=limit)
+        except Exception:
+            return []
 
         for t in wp.get("tracks", []):
             vid = t.get("videoId")
