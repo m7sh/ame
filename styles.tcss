@@ -60,6 +60,13 @@ TopBar {
     background: ansi_default;
 }
 
+AnimatedLoader {
+    width: 100%;
+    height: 1fr;
+    content-align: center middle;
+    background: ansi_default;
+}
+
 /* ------------------------------------------------------------------ */
 /* Data tables                                                         */
 /* ------------------------------------------------------------------ */
@@ -128,61 +135,6 @@ Tab.-active {
     color: $ame-accent;
     background: transparent;
     text-style: bold;
-}
-
-/* ------------------------------------------------------------------ */
-/* Moods split pane                                                    */
-/* ------------------------------------------------------------------ */
-#moods_split {
-    width: 100%;
-    height: 1fr;
-    layout: horizontal;
-}
-
-#categories_pane {
-    width: 30;
-    min-width: 22;
-    height: 100%;
-    background: transparent;
-    padding-right: 2;
-}
-
-#categories_list {
-    height: 1fr;
-    background: ansi_default;
-    border: none;
-    padding: 0;
-    overflow-x: hidden;
-    scrollbar-size-vertical: 0;
-}
-
-#categories_list > ListItem {
-    height: 1;
-    padding: 0 1;
-    background: transparent;
-    color: $ame-fg;
-}
-
-#categories_list > ListItem:hover {
-    background: $ame-hover;
-    color: $ame-accent;
-}
-
-#categories_list > ListItem.-highlight {
-    background: $ame-hover;
-    color: $ame-primary;
-    text-style: bold;
-}
-
-#categories_list > ListItem.-selected {
-    background: $ame-hover;
-    color: $ame-primary;
-    text-style: bold;
-}
-
-#playlists_pane {
-    width: 1fr;
-    height: 100%;
 }
 
 /* ------------------------------------------------------------------ */

@@ -74,7 +74,7 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `d` | remove the highlighted track from the queue or favourites |
 | `S` / `c` | shuffle / clear the queue |
 | `/` | focus search |
-| `t` / `r` / `m` / `s` / `F` / `q` | jump to trending / radio / moods / search / favourites / queue |
+| `t` / `r` / `s` / `F` / `q` | jump to trending / radio / search / favourites / queue |
 | `u` | refresh recommendations with fresh picks |
 | `U` | check for available updates |
 | `v` | show / hide the spectrum visualizer |
@@ -192,7 +192,7 @@ ame/
 ├── uninstall.sh      # Uninstaller script
 └── ui/
     ├── widgets.py    # TopBar, SectionHeader, SeekBar, PlayerBar, Spectrum
-    └── views.py      # Trending, Radio, Moods, Playlist, Search, Favourites, Queue
+    └── views.py      # Trending, Radio, Playlist, Search, Favourites, Queue
 ```
 
 ---

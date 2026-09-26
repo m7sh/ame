@@ -12,18 +12,16 @@ from textual.widget import Widget
 from textual.widgets import (
     Static,
     DataTable,
-    ListView,
-    ListItem,
     Input,
     TabbedContent,
     TabPane,
 )
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.message import Message
 
-from api import Track, Playlist, Category, format_seconds
+from api import Track, Playlist, format_seconds
 from theme import ThemeColors
-from ui.widgets import SectionHeader
+from ui.widgets import SectionHeader, AnimatedLoader
 
 
 # --------------------------------------------------------------------------- #
@@ -32,10 +30,16 @@ from ui.widgets import SectionHeader
 class TrackActionMessage(Message):
     """Base message for track actions."""
 
-    def __init__(self, track: Track, remaining_tracks: Optional[List[Track]] = None):
+    def __init__(
+        self,
+        track: Track,
+        remaining_tracks: Optional[List[Track]] = None,
+        auto_related: bool = False,
+    ):
         super().__init__()
         self.track = track
         self.remaining_tracks = remaining_tracks or []
+        self.auto_related = auto_related
 
 
 class PlayTrackMsg(TrackActionMessage):
@@ -56,14 +60,6 @@ class OpenPlaylistMsg(Message):
     def __init__(self, playlist: Playlist):
         super().__init__()
         self.playlist = playlist
-
-
-class SelectCategoryMsg(Message):
-    """Fired when a mood/genre category is selected."""
-
-    def __init__(self, category: Category):
-        super().__init__()
-        self.category = category
 
 
 class ExecuteSearchMsg(Message):
@@ -156,10 +152,16 @@ class TrendingView(TableFitMixin, Widget):
         self.recommended_tracks: List[Track] = []
         self.trending_tracks: List[Track] = []
         self.playlists: List[Playlist] = []
+        self._is_loading: bool = True
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
             yield SectionHeader(id="trending_header", classes="section_header")
+            yield AnimatedLoader(
+                title="LOADING RECOMMENDATIONS",
+                subtitle="fetching curated tracks from YouTube Music…",
+                id="trending_loader",
+            )
             with TabbedContent(initial="tab_recommended", id="trending_tabs"):
                 with TabPane("recommended", id="tab_recommended"):
                     yield DataTable(id="recommended_tracks_table", cursor_type="row")
@@ -179,7 +181,29 @@ class TrendingView(TableFitMixin, Widget):
             ("#", "num"), ("PLAYLIST", "title"), ("CURATOR", "meta")
         )
         self.query_one("#trending_header", SectionHeader).set_content("trending & recommendations")
+        self.show_loading("LOADING RECOMMENDATIONS", "fetching curated tracks from YouTube Music…")
         self._fit_tables()
+
+    def show_loading(self, title: str = "LOADING RECOMMENDATIONS", subtitle: str = "") -> None:
+        self._is_loading = True
+        try:
+            loader = self.query_one("#trending_loader", AnimatedLoader)
+            loader.set_message(title, subtitle)
+            loader.display = True
+            self.query_one("#trending_tabs", TabbedContent).display = False
+            self.query_one("#trending_header", SectionHeader).set_content(
+                "trending & recommendations", [("loading…", True)]
+            )
+        except Exception:
+            pass
+
+    def hide_loading(self) -> None:
+        self._is_loading = False
+        try:
+            self.query_one("#trending_loader", AnimatedLoader).display = False
+            self.query_one("#trending_tabs", TabbedContent).display = True
+        except Exception:
+            pass
 
     def _fitted_tables(self):
         try:
@@ -192,6 +216,8 @@ class TrendingView(TableFitMixin, Widget):
             return []
 
     def primary_widget(self) -> Optional[Widget]:
+        if getattr(self, "_is_loading", False):
+            return None
         try:
             tabs = self.query_one("#trending_tabs", TabbedContent)
             if tabs.active == "tab_chart_playlists":
@@ -208,6 +234,7 @@ class TrendingView(TableFitMixin, Widget):
         trending_or_playlists: Any,
         playlists: Optional[List[Playlist]] = None,
     ) -> None:
+        self.hide_loading()
         if playlists is None:
             # Backwards compatibility: populate_data(tracks, playlists)
             self.recommended_tracks = recommended
@@ -312,10 +339,16 @@ class RadioView(TableFitMixin, Widget):
         super().__init__(**kwargs)
         self.tracks: List[Track] = []
         self.seed_track: Optional[Track] = None
+        self._is_loading: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
             yield SectionHeader(id="radio_header", classes="section_header")
+            yield AnimatedLoader(
+                title="BUILDING RADIO",
+                subtitle="generating algorithmic station…",
+                id="radio_loader",
+            )
             yield DataTable(id="radio_tracks_table", cursor_type="row")
 
     def on_mount(self) -> None:
@@ -325,7 +358,27 @@ class RadioView(TableFitMixin, Widget):
         self.query_one("#radio_header", SectionHeader).set_content(
             "radio", [("press r on a song", False)]
         )
+        self.query_one("#radio_loader", AnimatedLoader).display = False
         self._fit_tables()
+
+    def show_loading(self, title: str = "BUILDING RADIO", subtitle: str = "") -> None:
+        self._is_loading = True
+        try:
+            loader = self.query_one("#radio_loader", AnimatedLoader)
+            loader.set_message(title, subtitle)
+            loader.display = True
+            self.query_one("#radio_tracks_table", DataTable).display = False
+            self.query_one("#radio_header", SectionHeader).set_content("radio", [("building…", True)])
+        except Exception:
+            pass
+
+    def hide_loading(self) -> None:
+        self._is_loading = False
+        try:
+            self.query_one("#radio_loader", AnimatedLoader).display = False
+            self.query_one("#radio_tracks_table", DataTable).display = True
+        except Exception:
+            pass
 
     def _fitted_tables(self):
         try:
@@ -334,12 +387,15 @@ class RadioView(TableFitMixin, Widget):
             return []
 
     def primary_widget(self) -> Optional[Widget]:
+        if getattr(self, "_is_loading", False):
+            return None
         try:
             return self.query_one("#radio_tracks_table", DataTable)
         except Exception:
             return None
 
     def set_radio_tracks(self, seed: Track, tracks: List[Track]) -> None:
+        self.hide_loading()
         self.seed_track = seed
         self.tracks = tracks
 
@@ -377,110 +433,7 @@ class RadioView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 3. Moods & Playlists
-# --------------------------------------------------------------------------- #
-class MoodsPlaylistsView(TableFitMixin, Widget):
-    """Categories on the left, curated playlists on the right."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.categories: List[Category] = []
-        self.current_playlists: List[Playlist] = []
-        self.current_category: str = ""
-
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="view_content_container"):
-            yield SectionHeader(id="moods_header", classes="section_header")
-            with Horizontal(id="moods_split"):
-                with Vertical(id="categories_pane"):
-                    yield ListView(id="categories_list")
-                with Vertical(id="playlists_pane"):
-                    yield DataTable(id="mood_playlists_table", cursor_type="row")
-
-    def on_mount(self) -> None:
-        self.query_one("#mood_playlists_table", DataTable).add_columns(
-            ("#", "num"), ("PLAYLIST", "title"), ("TRACKS", "meta")
-        )
-        self.query_one("#moods_header", SectionHeader).set_content("moods")
-        self._fit_tables()
-
-    def _fitted_tables(self):
-        try:
-            return [(self.query_one("#mood_playlists_table", DataTable), "playlist")]
-        except Exception:
-            return []
-
-    def primary_widget(self) -> Optional[Widget]:
-        try:
-            return self.query_one("#categories_list", ListView)
-        except Exception:
-            return None
-
-    def populate_categories(self, categories: Dict[str, List[Category]]) -> None:
-        self.categories.clear()
-        cat_list = self.query_one("#categories_list", ListView)
-        cat_list.clear()
-
-        for _group, items in categories.items():
-            for c in items:
-                self.categories.append(c)
-                cat_list.append(ListItem(Static(c.title), id=f"cat_{len(self.categories) - 1}"))
-
-        if self.categories:
-            cat_list.index = 0
-
-        self.query_one("#moods_header", SectionHeader).set_content(
-            "moods", [(_count(len(self.categories), "category", "categories"), False)]
-        )
-
-    def populate_playlists(self, category_name: str, playlists: List[Playlist]) -> None:
-        self.current_playlists = playlists
-        self.current_category = category_name
-
-        self.query_one("#moods_header", SectionHeader).set_content(
-            "moods",
-            [(category_name, True), (_count(len(playlists), "playlist"), False)],
-        )
-
-        table = self.query_one("#mood_playlists_table", DataTable)
-        table.clear()
-        for idx, p in enumerate(playlists, 1):
-            table.add_row(str(idx), p.title, p.track_count or "—",
-                          key=f"m_pl_{p.id}_{idx}")
-        self._fit_tables()
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        idx_str = event.item.id or ""
-        if idx_str.startswith("cat_"):
-            try:
-                idx = int(idx_str.replace("cat_", ""))
-                if 0 <= idx < len(self.categories):
-                    self.post_message(SelectCategoryMsg(self.categories[idx]))
-            except ValueError:
-                pass
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if 0 <= event.cursor_row < len(self.current_playlists):
-            self.post_message(OpenPlaylistMsg(self.current_playlists[event.cursor_row]))
-
-    def get_selected_playlist(self) -> Optional[Playlist]:
-        try:
-            table = self.query_one("#mood_playlists_table", DataTable)
-            if 0 <= table.cursor_row < len(self.current_playlists):
-                return self.current_playlists[table.cursor_row]
-        except Exception:
-            pass
-        return None
-
-    def get_all_tracks(self) -> List[Track]:
-        return []
-
-    def refresh_theme(self) -> None:
-        self.query_one("#moods_header", SectionHeader).refresh()
-
-
-# --------------------------------------------------------------------------- #
-# 4. Playlist detail
+# 3. Playlist detail
 # --------------------------------------------------------------------------- #
 class PlaylistDetailView(TableFitMixin, Widget):
     """Inspect a playlist's tracks."""
@@ -489,10 +442,16 @@ class PlaylistDetailView(TableFitMixin, Widget):
         super().__init__(**kwargs)
         self.playlist: Optional[Playlist] = None
         self.tracks: List[Track] = []
+        self._is_loading: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
             yield SectionHeader(id="pl_header", classes="section_header")
+            yield AnimatedLoader(
+                title="LOADING PLAYLIST",
+                subtitle="fetching tracks from YouTube Music…",
+                id="pl_loader",
+            )
             yield DataTable(id="pl_detail_table", cursor_type="row")
 
     def on_mount(self) -> None:
@@ -500,7 +459,27 @@ class PlaylistDetailView(TableFitMixin, Widget):
             ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
         )
         self.query_one("#pl_header", SectionHeader).set_content("playlist")
+        self.query_one("#pl_loader", AnimatedLoader).display = False
         self._fit_tables()
+
+    def show_loading(self, title: str = "LOADING PLAYLIST", subtitle: str = "") -> None:
+        self._is_loading = True
+        try:
+            loader = self.query_one("#pl_loader", AnimatedLoader)
+            loader.set_message(title, subtitle)
+            loader.display = True
+            self.query_one("#pl_detail_table", DataTable).display = False
+            self.query_one("#pl_header", SectionHeader).set_content("playlist", [("loading…", True)])
+        except Exception:
+            pass
+
+    def hide_loading(self) -> None:
+        self._is_loading = False
+        try:
+            self.query_one("#pl_loader", AnimatedLoader).display = False
+            self.query_one("#pl_detail_table", DataTable).display = True
+        except Exception:
+            pass
 
     def _fitted_tables(self):
         try:
@@ -509,12 +488,15 @@ class PlaylistDetailView(TableFitMixin, Widget):
             return []
 
     def primary_widget(self) -> Optional[Widget]:
+        if getattr(self, "_is_loading", False):
+            return None
         try:
             return self.query_one("#pl_detail_table", DataTable)
         except Exception:
             return None
 
     def set_playlist(self, playlist: Playlist, tracks: List[Track]) -> None:
+        self.hide_loading()
         self.playlist = playlist
         self.tracks = tracks
 
@@ -556,7 +538,7 @@ class PlaylistDetailView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 5. Search
+# 4. Search
 # --------------------------------------------------------------------------- #
 class SearchView(TableFitMixin, Widget):
     """Search songs and public playlists, with live suggestions while typing."""
@@ -572,11 +554,17 @@ class SearchView(TableFitMixin, Widget):
         self.playlist_results: List[Playlist] = []
         self._search_timer = None
         self._last_query = ""
+        self._is_loading: bool = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
             yield Input(placeholder="search songs, artists or playlists…", id="search_input")
             yield SectionHeader(id="search_header", classes="section_header")
+            yield AnimatedLoader(
+                title="SEARCHING",
+                subtitle="searching YouTube Music…",
+                id="search_loader",
+            )
             with TabbedContent(initial="tab_search_songs", id="search_tabs"):
                 with TabPane("songs", id="tab_search_songs"):
                     yield DataTable(id="search_songs_table", cursor_type="row")
@@ -591,7 +579,27 @@ class SearchView(TableFitMixin, Widget):
             ("#", "num"), ("PLAYLIST", "title"), ("CURATOR", "meta")
         )
         self.query_one("#search_header", SectionHeader).set_content("search")
+        self.query_one("#search_loader", AnimatedLoader).display = False
         self._fit_tables()
+
+    def show_loading(self, title: str = "SEARCHING", subtitle: str = "") -> None:
+        self._is_loading = True
+        try:
+            loader = self.query_one("#search_loader", AnimatedLoader)
+            loader.set_message(title, subtitle)
+            loader.display = True
+            self.query_one("#search_tabs", TabbedContent).display = False
+            self.query_one("#search_header", SectionHeader).set_content("search", [("searching…", True)])
+        except Exception:
+            pass
+
+    def hide_loading(self) -> None:
+        self._is_loading = False
+        try:
+            self.query_one("#search_loader", AnimatedLoader).display = False
+            self.query_one("#search_tabs", TabbedContent).display = True
+        except Exception:
+            pass
 
     def _fitted_tables(self):
         try:
@@ -604,6 +612,8 @@ class SearchView(TableFitMixin, Widget):
 
     def primary_widget(self) -> Optional[Widget]:
         try:
+            if getattr(self, "_is_loading", False):
+                return self.query_one("#search_input", Input)
             tabs = self.query_one("#search_tabs", TabbedContent)
             if tabs.active == "tab_search_playlists":
                 return self.query_one("#search_playlists_table", DataTable)
@@ -644,6 +654,7 @@ class SearchView(TableFitMixin, Widget):
             self._search_timer = None
 
     def _clear_results(self) -> None:
+        self.hide_loading()
         self.song_results = []
         self.playlist_results = []
         self.query_one("#search_songs_table", DataTable).clear()
@@ -651,6 +662,7 @@ class SearchView(TableFitMixin, Widget):
         self.query_one("#search_header", SectionHeader).set_content("search")
 
     def set_results(self, songs: List[Track], playlists: List[Playlist]) -> None:
+        self.hide_loading()
         self.song_results = songs
         self.playlist_results = playlists
 
@@ -697,7 +709,7 @@ class SearchView(TableFitMixin, Widget):
         if event.data_table.id == "search_songs_table":
             if 0 <= event.cursor_row < len(self.song_results):
                 tr = self.song_results[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.song_results[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "search_playlists_table":
             if 0 <= event.cursor_row < len(self.playlist_results):
                 self.post_message(OpenPlaylistMsg(self.playlist_results[event.cursor_row]))
@@ -707,7 +719,7 @@ class SearchView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 6. Queue
+# 5. Queue
 # --------------------------------------------------------------------------- #
 class QueueView(TableFitMixin, Widget):
     """The active playback queue."""
@@ -773,7 +785,7 @@ class QueueView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 7. Favourites
+# 6. Favourites
 # --------------------------------------------------------------------------- #
 class FavouritesView(TableFitMixin, Widget):
     """Songs the user has starred, persisted across sessions."""
