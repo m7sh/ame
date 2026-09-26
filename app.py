@@ -453,6 +453,23 @@ class AmeApp(App):
             self._safe_call(self.notify, f"autoplay failed: {e}", severity="warning")
         self._safe_call(self._set_status, "")
 
+    @work(group="related_queue_loader", exclusive=True, thread=True)
+    def load_related_queue_worker(self, seed_track: Track) -> None:
+        self._safe_call(self._set_status, f"finding related music…")
+        try:
+            recommendations = self.api.get_radio(seed_track.id, limit=35)
+            recs = [t for t in recommendations if t.id != seed_track.id] or recommendations
+            if recs:
+                def _update():
+                    if self.player.current_track is None or self.player.current_track.id == seed_track.id:
+                        self.player.append_queue(recs)
+                        self.notify(f"queued {len(recs)} related tracks", timeout=3)
+                self._safe_call(_update)
+        except Exception as e:
+            self._safe_call(self.notify, f"could not load related tracks: {e}", severity="warning")
+        finally:
+            self._safe_call(self._set_status, "")
+
     @work(group="search_loader", exclusive=True, thread=True)
     def search_worker(self, query: str, live: bool = False, token: int = 0) -> None:
         # Live suggestions stay quiet (no status flicker, no error popups) and
@@ -519,7 +536,10 @@ class AmeApp(App):
     # ------------------------------------------------------------------ #
     def on_play_track_msg(self, msg: PlayTrackMsg) -> None:
         self.player.play(msg.track)
-        if msg.remaining_tracks:
+        if getattr(msg, "auto_related", False):
+            self.player.clear_queue()
+            self.load_related_queue_worker(msg.track)
+        elif msg.remaining_tracks:
             self.player.queue.clear()
             self.player.append_queue(msg.remaining_tracks)
 

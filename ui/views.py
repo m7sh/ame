@@ -32,10 +32,16 @@ from ui.widgets import SectionHeader
 class TrackActionMessage(Message):
     """Base message for track actions."""
 
-    def __init__(self, track: Track, remaining_tracks: Optional[List[Track]] = None):
+    def __init__(
+        self,
+        track: Track,
+        remaining_tracks: Optional[List[Track]] = None,
+        auto_related: bool = False,
+    ):
         super().__init__()
         self.track = track
         self.remaining_tracks = remaining_tracks or []
+        self.auto_related = auto_related
 
 
 class PlayTrackMsg(TrackActionMessage):
@@ -697,7 +703,7 @@ class SearchView(TableFitMixin, Widget):
         if event.data_table.id == "search_songs_table":
             if 0 <= event.cursor_row < len(self.song_results):
                 tr = self.song_results[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.song_results[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "search_playlists_table":
             if 0 <= event.cursor_row < len(self.playlist_results):
                 self.post_message(OpenPlaylistMsg(self.playlist_results[event.cursor_row]))

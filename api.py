@@ -572,4 +572,4 @@ class YTMusicAPI:
                 )
             )
 
-        return tracks
+        return tracks[:limit] if limit else tracks
