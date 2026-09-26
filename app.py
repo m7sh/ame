@@ -14,10 +14,20 @@ if len(sys.argv) > 1:
 
 Usage:
   ame                  Launch player
+  ame --update         Update ame to the latest version
   ame --uninstall      Uninstall ame and remove symlinks / data
   ame --help, -h       Show this help message
 """)
         sys.exit(0)
+    elif arg in ("--update", "update"):
+        import subprocess
+        from pathlib import Path
+        update_sh = Path(__file__).resolve().parent / "update.sh"
+        if update_sh.exists():
+            sys.exit(subprocess.call(["bash", str(update_sh)] + sys.argv[2:]))
+        else:
+            print("Error: update.sh not found.", file=sys.stderr)
+            sys.exit(1)
     elif arg in ("--uninstall", "uninstall"):
         import subprocess
         from pathlib import Path
@@ -109,6 +119,7 @@ class AmeApp(App):
         Binding("left_square_bracket", "prev_tab", "Previous Tab", show=False),
         Binding("right_square_bracket", "next_tab", "Next Tab", show=False),
         Binding("u", "refresh_recommendations", "Refresh Recs", show=False),
+        Binding("U", "check_app_update", "Check Update", show=False),
     ]
 
     def __init__(self) -> None:
@@ -355,8 +366,30 @@ class AmeApp(App):
                 self.load_category_playlists_worker(first_cat)
         except Exception:
             pass
-
         self._safe_call(self._set_status, "")
+        self.check_update_quietly()
+
+    @work(group="quiet_update", exclusive=True, thread=True)
+    def check_update_quietly(self) -> None:
+        try:
+            import subprocess
+            from pathlib import Path
+            script = Path(__file__).resolve().parent / "update.sh"
+            res = subprocess.run(
+                ["bash", str(script), "--check"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+            )
+            if "Update available" in res.stdout:
+                self._safe_call(
+                    self.notify,
+                    "update available · run 'ame --update' to upgrade",
+                    timeout=5,
+                )
+        except Exception:
+            pass
 
     @work(group="category_loader", exclusive=True, thread=True)
     def load_category_playlists_worker(self, category: Category) -> None:
@@ -714,6 +747,36 @@ class AmeApp(App):
                 tabs.active = panes[prev_idx]
         except Exception:
             pass
+
+    @work(group="update_checker", exclusive=True, thread=True)
+    def action_check_app_update(self) -> None:
+        self._safe_call(self._set_status, "checking for updates…")
+        try:
+            import subprocess
+            from pathlib import Path
+            script = Path(__file__).resolve().parent / "update.sh"
+            res = subprocess.run(
+                ["bash", str(script), "--check"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=6,
+            )
+            out = res.stdout
+            if "Update available" in out:
+                self._safe_call(
+                    self.notify,
+                    "update available! Run 'ame --update' in terminal",
+                    severity="information",
+                    timeout=5,
+                )
+            elif "up to date" in out:
+                self._safe_call(self.notify, "ame is up to date", timeout=3)
+            else:
+                self._safe_call(self.notify, "checked for updates", timeout=2)
+        except Exception:
+            self._safe_call(self.notify, "could not check for updates", severity="warning", timeout=3)
+        self._safe_call(self._set_status, "")
 
     def action_switch_view_radio(self) -> None:
         self.switch_view("view_radio")

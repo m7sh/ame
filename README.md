@@ -76,6 +76,7 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `/` | focus search |
 | `t` / `r` / `m` / `s` / `F` / `q` | jump to trending / radio / moods / search / favourites / queue |
 | `u` | refresh recommendations with fresh picks |
+| `U` | check for available updates |
 | `v` | show / hide the spectrum visualizer |
 | `esc` | back or close overlay |
 | `T` | re-sync the Omarchy theme |
@@ -120,6 +121,33 @@ ln -sf "$PWD/ame" ~/.local/bin/ame
 
 ---
 
+## Updating
+
+To update `ame` to the latest version at any time, run:
+
+```bash
+ame --update
+```
+
+Or from inside the cloned repository:
+
+```bash
+./update.sh
+```
+
+This will:
+- Fetch and fast-forward the latest commits from GitHub
+- Automatically install or update dependencies in `.venv` if `requirements.txt` changed
+- Safely stash and restore any local modifications
+
+You can also check if updates are available without applying them:
+
+```bash
+ame --update --check
+```
+
+---
+
 ## Uninstallation
 
 To remove `ame` from your system, run the uninstaller directly:
@@ -160,6 +188,7 @@ ame/
 ├── styles.tcss       # Static stylesheet driven by theme CSS variables
 ├── requirements.txt
 ├── ame               # Launcher script
+├── update.sh         # Self-updater script
 ├── uninstall.sh      # Uninstaller script
 └── ui/
     ├── widgets.py    # TopBar, SectionHeader, SeekBar, PlayerBar, Spectrum

@@ -14,14 +14,23 @@ case "${1:-}" in
         shift
         AME_CALLER_PATH="$CALLER_BIN" exec "$DIR/uninstall.sh" "$@"
         ;;
+    --update|update)
+        shift
+        exec "$DIR/update.sh" "$@"
+        ;;
     --help|-h)
         cat << 'EOF'
 ame — minimal, keyboard-driven YouTube Music player for the terminal
 
 Usage:
   ame                  Launch player
+  ame --update         Update ame to the latest version
   ame --uninstall      Uninstall ame and remove symlinks / data
   ame --help, -h       Show this help message
+
+Options for update:
+  ame --update --check           Check for available updates without applying
+  ame --update --force           Force reinstall dependencies
 
 Options for uninstallation:
   ame --uninstall --purge        Purge all user data (~/.local/share/ame)
