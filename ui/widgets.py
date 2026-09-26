@@ -488,6 +488,7 @@ class HelpScreen(ModalScreen):
         ("/", "focus search"),
         ("t r m s F q", "jump to view"),
         ("u", "refresh recommendations"),
+        ("U", "check for updates"),
         ("v", "toggle the visualizer"),
         ("T", "sync Omarchy theme"),
         ("?", "toggle this help"),
