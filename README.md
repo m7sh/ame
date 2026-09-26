@@ -117,6 +117,33 @@ ln -sf "$PWD/ame" ~/.local/bin/ame
 
 ---
 
+## Uninstallation
+
+To remove `ame` from your system, run the uninstaller directly:
+
+```bash
+ame --uninstall
+```
+
+Or run the script from the cloned repository:
+
+```bash
+./uninstall.sh
+```
+
+By default, the uninstaller prompts whether to retain your saved favourites and history (`~/.local/share/ame`), and whether to remove the repository directory.
+
+### Non-interactive flags
+
+```bash
+ame --uninstall --purge        # Delete binary symlinks, configs, and all user data
+ame --uninstall --keep-data    # Remove binary symlinks but retain favourites and history
+ame --uninstall --dry-run      # Preview which files and directories would be removed
+ame --uninstall -y             # Proceed without confirmation prompts
+```
+
+---
+
 ## Project layout
 
 ```
@@ -130,6 +157,7 @@ ame/
 ├── styles.tcss       # Static stylesheet driven by theme CSS variables
 ├── requirements.txt
 ├── ame               # Launcher script
+├── uninstall.sh      # Uninstaller script
 └── ui/
     ├── widgets.py    # TopBar, SectionHeader, SeekBar, PlayerBar, Spectrum
     └── views.py      # Trending, Radio, Moods, Playlist, Search, Favourites, Queue

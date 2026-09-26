@@ -1,12 +1,40 @@
 #!/usr/bin/env bash
 # Launcher script for ame — terminal YouTube Music player
 SOURCE="${BASH_SOURCE[0]}"
+CALLER_BIN="$SOURCE"
 while [ -h "$SOURCE" ]; do
     DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
     SOURCE="$(readlink "$SOURCE")"
     [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+case "${1:-}" in
+    --uninstall|uninstall)
+        shift
+        AME_CALLER_PATH="$CALLER_BIN" exec "$DIR/uninstall.sh" "$@"
+        ;;
+    --help|-h)
+        cat << 'EOF'
+ame — minimal, keyboard-driven YouTube Music player for the terminal
+
+Usage:
+  ame                  Launch player
+  ame --uninstall      Uninstall ame and remove symlinks / data
+  ame --help, -h       Show this help message
+
+Options for uninstallation:
+  ame --uninstall --purge        Purge all user data (~/.local/share/ame)
+  ame --uninstall --keep-data    Retain user data (favourites and history)
+  ame --uninstall --dry-run      Preview removal without deleting files
+  ame --uninstall -y, --yes      Non-interactive confirmation
+
+Cheatsheet & documentation:
+  https://github.com/m7sh/ame
+EOF
+        exit 0
+        ;;
+esac
 
 cd "$DIR" || exit 1
 

@@ -5,6 +5,29 @@ An unauthenticated, keyboard-driven YouTube Music player for the terminal.
 Built with Textual, ytmusicapi (guest mode), yt-dlp and a headless mpv daemon.
 """
 
+import sys
+
+if len(sys.argv) > 1:
+    arg = sys.argv[1]
+    if arg in ("--help", "-h"):
+        print("""ame — minimal, keyboard-driven YouTube Music player for the terminal
+
+Usage:
+  ame                  Launch player
+  ame --uninstall      Uninstall ame and remove symlinks / data
+  ame --help, -h       Show this help message
+""")
+        sys.exit(0)
+    elif arg in ("--uninstall", "uninstall"):
+        import subprocess
+        from pathlib import Path
+        uninstall_sh = Path(__file__).resolve().parent / "uninstall.sh"
+        if uninstall_sh.exists():
+            sys.exit(subprocess.call(["bash", str(uninstall_sh)] + sys.argv[2:]))
+        else:
+            print("Error: uninstall.sh not found.", file=sys.stderr)
+            sys.exit(1)
+
 import threading
 from typing import Optional
 
