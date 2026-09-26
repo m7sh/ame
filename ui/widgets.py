@@ -5,6 +5,7 @@ The visual language borrows from cliamp: a letterspaced wordmark, bracketed
 chips, section dividers, a block volume meter and a full-width seek bar.
 """
 
+import math
 import random
 from typing import List, Optional, Tuple
 
@@ -101,9 +102,20 @@ class TopBar(Static):
     theme_name: reactive[str] = reactive("Omarchy")
     status: reactive[str] = reactive("")
 
+    SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._tab_spans: List[Tuple[int, int, str]] = []
+        self._spinner_idx: int = 0
+
+    def on_mount(self) -> None:
+        self.set_interval(0.08, self._tick_spinner)
+
+    def _tick_spinner(self) -> None:
+        if self.status:
+            self._spinner_idx += 1
+            self.refresh()
 
     def render(self) -> Text:
         t = _palette(self)
@@ -129,8 +141,10 @@ class TopBar(Static):
             self._tab_spans.append((start, text.cell_len, view_id))
 
         if self.status:
+            frame = self.SPINNER_FRAMES[self._spinner_idx % len(self.SPINNER_FRAMES)]
             text.append("  ·  ", style=t.border)
-            text.append(self.status, style=t.muted)
+            text.append(f"{frame} ", style=f"bold {t.accent}")
+            text.append(self.status, style=t.foreground)
 
         right = Text(no_wrap=True)
         if width >= 104 and self.theme_name:
@@ -193,6 +207,90 @@ class SectionHeader(Static):
 
         if self._chips:
             text.append(" ──", style=t.border)
+        return text
+
+
+class AnimatedLoader(Widget):
+    """Clean, music-themed animated loading widget with equalizer waves and marquee."""
+
+    DEFAULT_CSS = """
+    AnimatedLoader {
+        width: 100%;
+        height: 1fr;
+        content-align: center middle;
+        background: ansi_default;
+    }
+    """
+
+    SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    WAVE_CHARS = (" ", "▂", "▃", "▄", "▅", "▆", "▇", "█")
+
+    title: reactive[str] = reactive("LOADING")
+    subtitle: reactive[str] = reactive("")
+
+    def __init__(self, title: str = "LOADING", subtitle: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.title = title
+        self.subtitle = subtitle
+        self._frame: int = 0
+
+    def on_mount(self) -> None:
+        self.set_interval(0.08, self._tick)
+
+    def _tick(self) -> None:
+        if self.display:
+            self._frame += 1
+            self.refresh()
+
+    def set_message(self, title: str, subtitle: str = "") -> None:
+        self.title = title
+        self.subtitle = subtitle
+        self.refresh()
+
+    def render(self) -> Text:
+        t = _palette(self)
+        spin = self.SPINNER[self._frame % len(self.SPINNER)]
+        h = self.size.height
+        compact = h > 0 and h < 11
+
+        text = Text(justify="center")
+        if not compact:
+            text.append("\n\n")
+        else:
+            text.append("\n")
+
+        text.append(f"{spin}  ", style=f"bold {t.accent}")
+        text.append(f"{self.title}\n", style=f"bold {t.foreground}")
+
+        if self.subtitle:
+            text.append(f"{self.subtitle}\n", style=t.muted)
+            if not compact:
+                text.append("\n")
+        else:
+            text.append("\n")
+
+        num_bars = 22
+        wave_text = Text()
+        for i in range(num_bars):
+            val = (math.sin(self._frame * 0.3 + i * 0.45) + 1) / 2
+            char_idx = int(val * (len(self.WAVE_CHARS) - 1))
+            char = self.WAVE_CHARS[char_idx]
+            style = f"bold {t.accent}" if char_idx >= 4 else t.primary
+            wave_text.append(char, style=style)
+            wave_text.append(" ")
+
+        text.append_text(wave_text)
+        text.append("\n")
+
+        if not compact:
+            text.append("\n")
+            bar_width = 24
+            pos = int((math.sin(self._frame * 0.22) + 1) / 2 * (bar_width - 6))
+            bar_str = "░" * pos + "■" * 6 + "░" * (bar_width - pos - 6)
+            text.append("▸ ", style=t.border)
+            text.append(f"[ {bar_str} ]", style=f"bold {t.accent}")
+            text.append(" ◂\n", style=t.border)
+
         return text
 
 

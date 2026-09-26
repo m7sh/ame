@@ -60,6 +60,13 @@ TopBar {
     background: ansi_default;
 }
 
+AnimatedLoader {
+    width: 100%;
+    height: 1fr;
+    content-align: center middle;
+    background: ansi_default;
+}
+
 /* ------------------------------------------------------------------ */
 /* Data tables                                                         */
 /* ------------------------------------------------------------------ */

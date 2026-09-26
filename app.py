@@ -333,6 +333,7 @@ class AmeApp(App):
                 )
             )
         except Exception as e:
+            self._safe_call(lambda: self.query_one("#view_trending", TrendingView).hide_loading())
             self._safe_call(self.notify, f"could not load recommendations: {e}", severity="error")
 
         self._safe_call(self._set_status, "loading moods…")
@@ -352,6 +353,7 @@ class AmeApp(App):
             )
             self._safe_call(self.notify, "recommendations updated")
         except Exception as e:
+            self._safe_call(lambda: self.query_one("#view_trending", TrendingView).hide_loading())
             self._safe_call(self.notify, f"could not refresh recommendations: {e}", severity="error")
         self._safe_call(self._set_status, "")
         try:
@@ -394,6 +396,11 @@ class AmeApp(App):
     @work(group="category_loader", exclusive=True, thread=True)
     def load_category_playlists_worker(self, category: Category) -> None:
         self._safe_call(self._set_status, f"loading {category.title}…")
+        self._safe_call(
+            lambda: self.query_one("#view_moods", MoodsPlaylistsView).show_loading(
+                "LOADING MOODS", f"fetching {category.title} playlists…"
+            )
+        )
         try:
             playlists = self.api.get_mood_playlists(category.params)
             self._safe_call(
@@ -402,12 +409,19 @@ class AmeApp(App):
                 )
             )
         except Exception as e:
+            self._safe_call(lambda: self.query_one("#view_moods", MoodsPlaylistsView).hide_loading())
             self._safe_call(self.notify, f"could not load playlists: {e}", severity="warning")
         self._safe_call(self._set_status, "")
 
     @work(group="playlist_loader", exclusive=True, thread=True)
     def load_playlist_worker(self, playlist: Playlist) -> None:
         self._safe_call(self._set_status, f"opening {playlist.title}…")
+        def _open():
+            self.query_one("#view_playlist_detail", PlaylistDetailView).show_loading(
+                "LOADING PLAYLIST", f"fetching tracks for {playlist.title}…"
+            )
+            self.switch_view("view_playlist_detail")
+        self._safe_call(_open)
         try:
             pl_info, tracks = self.api.get_playlist(playlist.id)
 
@@ -415,26 +429,32 @@ class AmeApp(App):
                 self.query_one("#view_playlist_detail", PlaylistDetailView).set_playlist(
                     pl_info, tracks
                 )
-                self.switch_view("view_playlist_detail")
             self._safe_call(_update)
         except Exception as e:
+            self._safe_call(lambda: self.query_one("#view_playlist_detail", PlaylistDetailView).hide_loading())
             self._safe_call(self.notify, f"could not open playlist: {e}", severity="error")
         self._safe_call(self._set_status, "")
 
     @work(group="radio_loader", exclusive=True, thread=True)
     def start_radio_worker(self, seed_track: Track) -> None:
         self._safe_call(self._set_status, f"building radio for {seed_track.title}…")
+        def _show():
+            self.query_one("#view_radio", RadioView).show_loading(
+                "BUILDING RADIO", f"generating radio station for {seed_track.title}…"
+            )
+            self.switch_view("view_radio")
+        self._safe_call(_show)
         try:
             recommendations = self.api.get_radio(seed_track.id, limit=35)
             recs = [t for t in recommendations if t.id != seed_track.id] or recommendations
 
             def _update():
                 self.query_one("#view_radio", RadioView).set_radio_tracks(seed_track, recs)
-                self.switch_view("view_radio")
                 self.player.play(seed_track)
                 self.player.append_queue(recs)
             self._safe_call(_update)
         except Exception as e:
+            self._safe_call(lambda: self.query_one("#view_radio", RadioView).hide_loading())
             self._safe_call(self.notify, f"could not build radio: {e}", severity="error")
         self._safe_call(self._set_status, "")
 
@@ -476,6 +496,11 @@ class AmeApp(App):
         # fetch a smaller batch; an explicit submit gets the full result set.
         if not live:
             self._safe_call(self._set_status, f"searching “{query}”…")
+            self._safe_call(
+                lambda: self.query_one("#view_search", SearchView).show_loading(
+                    "SEARCHING", f"searching YouTube Music for “{query}”…"
+                )
+            )
         try:
             songs = self.api.search_songs(query, limit=10 if live else 30)
             playlists = self.api.search_playlists(query, limit=8 if live else 20)
@@ -488,6 +513,7 @@ class AmeApp(App):
             self._safe_call(_apply)
         except Exception as e:
             if not live:
+                self._safe_call(lambda: self.query_one("#view_search", SearchView).hide_loading())
                 self._safe_call(self.notify, f"search failed: {e}", severity="error")
         finally:
             if not live:
@@ -737,11 +763,25 @@ class AmeApp(App):
 
     def action_switch_view_trending(self) -> None:
         if self.active_view_id == "view_trending":
+            try:
+                self.query_one("#view_trending", TrendingView).show_loading(
+                    "REFRESHING RECOMMENDATIONS",
+                    "fetching fresh AI recommendations & live charts…",
+                )
+            except Exception:
+                pass
             self.refresh_recommendations_worker()
         else:
             self.switch_view("view_trending")
 
     def action_refresh_recommendations(self) -> None:
+        try:
+            self.query_one("#view_trending", TrendingView).show_loading(
+                "REFRESHING RECOMMENDATIONS",
+                "fetching fresh AI recommendations & live charts…",
+            )
+        except Exception:
+            pass
         self.refresh_recommendations_worker()
 
     def action_next_tab(self) -> None:
