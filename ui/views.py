@@ -12,16 +12,14 @@ from textual.widget import Widget
 from textual.widgets import (
     Static,
     DataTable,
-    ListView,
-    ListItem,
     Input,
     TabbedContent,
     TabPane,
 )
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.message import Message
 
-from api import Track, Playlist, Category, format_seconds
+from api import Track, Playlist, format_seconds
 from theme import ThemeColors
 from ui.widgets import SectionHeader, AnimatedLoader
 
@@ -62,14 +60,6 @@ class OpenPlaylistMsg(Message):
     def __init__(self, playlist: Playlist):
         super().__init__()
         self.playlist = playlist
-
-
-class SelectCategoryMsg(Message):
-    """Fired when a mood/genre category is selected."""
-
-    def __init__(self, category: Category):
-        super().__init__()
-        self.category = category
 
 
 class ExecuteSearchMsg(Message):
@@ -443,136 +433,7 @@ class RadioView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 3. Moods & Playlists
-# --------------------------------------------------------------------------- #
-class MoodsPlaylistsView(TableFitMixin, Widget):
-    """Categories on the left, curated playlists on the right."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.categories: List[Category] = []
-        self.current_playlists: List[Playlist] = []
-        self.current_category: str = ""
-        self._is_loading: bool = False
-
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="view_content_container"):
-            yield SectionHeader(id="moods_header", classes="section_header")
-            with Horizontal(id="moods_split"):
-                with Vertical(id="categories_pane"):
-                    yield ListView(id="categories_list")
-                with Vertical(id="playlists_pane"):
-                    yield AnimatedLoader(
-                        title="LOADING MOODS",
-                        subtitle="fetching curated playlists…",
-                        id="moods_loader",
-                    )
-                    yield DataTable(id="mood_playlists_table", cursor_type="row")
-
-    def on_mount(self) -> None:
-        self.query_one("#mood_playlists_table", DataTable).add_columns(
-            ("#", "num"), ("PLAYLIST", "title"), ("TRACKS", "meta")
-        )
-        self.query_one("#moods_header", SectionHeader).set_content("moods")
-        self.query_one("#moods_loader", AnimatedLoader).display = False
-        self._fit_tables()
-
-    def show_loading(self, title: str = "LOADING MOODS", subtitle: str = "") -> None:
-        self._is_loading = True
-        try:
-            loader = self.query_one("#moods_loader", AnimatedLoader)
-            loader.set_message(title, subtitle)
-            loader.display = True
-            self.query_one("#mood_playlists_table", DataTable).display = False
-        except Exception:
-            pass
-
-    def hide_loading(self) -> None:
-        self._is_loading = False
-        try:
-            self.query_one("#moods_loader", AnimatedLoader).display = False
-            self.query_one("#mood_playlists_table", DataTable).display = True
-        except Exception:
-            pass
-
-    def _fitted_tables(self):
-        try:
-            return [(self.query_one("#mood_playlists_table", DataTable), "playlist")]
-        except Exception:
-            return []
-
-    def primary_widget(self) -> Optional[Widget]:
-        try:
-            return self.query_one("#categories_list", ListView)
-        except Exception:
-            return None
-
-    def populate_categories(self, categories: Dict[str, List[Category]]) -> None:
-        self.categories.clear()
-        cat_list = self.query_one("#categories_list", ListView)
-        cat_list.clear()
-
-        for _group, items in categories.items():
-            for c in items:
-                self.categories.append(c)
-                cat_list.append(ListItem(Static(c.title), id=f"cat_{len(self.categories) - 1}"))
-
-        if self.categories:
-            cat_list.index = 0
-
-        self.query_one("#moods_header", SectionHeader).set_content(
-            "moods", [(_count(len(self.categories), "category", "categories"), False)]
-        )
-
-    def populate_playlists(self, category_name: str, playlists: List[Playlist]) -> None:
-        self.hide_loading()
-        self.current_playlists = playlists
-        self.current_category = category_name
-
-        self.query_one("#moods_header", SectionHeader).set_content(
-            "moods",
-            [(category_name, True), (_count(len(playlists), "playlist"), False)],
-        )
-
-        table = self.query_one("#mood_playlists_table", DataTable)
-        table.clear()
-        for idx, p in enumerate(playlists, 1):
-            table.add_row(str(idx), p.title, p.track_count or "—",
-                          key=f"m_pl_{p.id}_{idx}")
-        self._fit_tables()
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        idx_str = event.item.id or ""
-        if idx_str.startswith("cat_"):
-            try:
-                idx = int(idx_str.replace("cat_", ""))
-                if 0 <= idx < len(self.categories):
-                    self.post_message(SelectCategoryMsg(self.categories[idx]))
-            except ValueError:
-                pass
-
-    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if 0 <= event.cursor_row < len(self.current_playlists):
-            self.post_message(OpenPlaylistMsg(self.current_playlists[event.cursor_row]))
-
-    def get_selected_playlist(self) -> Optional[Playlist]:
-        try:
-            table = self.query_one("#mood_playlists_table", DataTable)
-            if 0 <= table.cursor_row < len(self.current_playlists):
-                return self.current_playlists[table.cursor_row]
-        except Exception:
-            pass
-        return None
-
-    def get_all_tracks(self) -> List[Track]:
-        return []
-
-    def refresh_theme(self) -> None:
-        self.query_one("#moods_header", SectionHeader).refresh()
-
-
-# --------------------------------------------------------------------------- #
-# 4. Playlist detail
+# 3. Playlist detail
 # --------------------------------------------------------------------------- #
 class PlaylistDetailView(TableFitMixin, Widget):
     """Inspect a playlist's tracks."""
@@ -677,7 +538,7 @@ class PlaylistDetailView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 5. Search
+# 4. Search
 # --------------------------------------------------------------------------- #
 class SearchView(TableFitMixin, Widget):
     """Search songs and public playlists, with live suggestions while typing."""
@@ -858,7 +719,7 @@ class SearchView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 6. Queue
+# 5. Queue
 # --------------------------------------------------------------------------- #
 class QueueView(TableFitMixin, Widget):
     """The active playback queue."""
@@ -924,7 +785,7 @@ class QueueView(TableFitMixin, Widget):
 
 
 # --------------------------------------------------------------------------- #
-# 7. Favourites
+# 6. Favourites
 # --------------------------------------------------------------------------- #
 class FavouritesView(TableFitMixin, Widget):
     """Songs the user has starred, persisted across sessions."""

@@ -47,7 +47,7 @@ from textual.widgets import ContentSwitcher, Input, TabbedContent, TabPane
 from textual import work
 from textual import events
 
-from api import YTMusicAPI, Track, Playlist, Category
+from api import YTMusicAPI, Track, Playlist
 from player import MPVPlayer
 from favourites import FavouritesStore
 from spectrum import CavaSpectrum
@@ -56,7 +56,6 @@ from ui.widgets import TopBar, PlayerBar, HelpScreen, Spectrum
 from ui.views import (
     TrendingView,
     RadioView,
-    MoodsPlaylistsView,
     PlaylistDetailView,
     SearchView,
     FavouritesView,
@@ -65,7 +64,6 @@ from ui.views import (
     QueueTrackMsg,
     StartRadioMsg,
     OpenPlaylistMsg,
-    SelectCategoryMsg,
     ExecuteSearchMsg,
 )
 
@@ -113,7 +111,6 @@ class AmeApp(App):
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         Binding("t", "switch_view_trending", "Trending", show=False),
         Binding("r", "switch_view_radio", "Radio", show=False),
-        Binding("m", "switch_view_moods", "Moods", show=False),
         Binding("s", "switch_view_search", "Search", show=False),
         Binding("q", "switch_view_queue", "Queue", show=False),
         Binding("left_square_bracket", "prev_tab", "Previous Tab", show=False),
@@ -173,7 +170,6 @@ class AmeApp(App):
         with ContentSwitcher(initial="view_trending", id="content_switcher"):
             yield TrendingView(id="view_trending")
             yield RadioView(id="view_radio")
-            yield MoodsPlaylistsView(id="view_moods")
             yield PlaylistDetailView(id="view_playlist_detail")
             yield SearchView(id="view_search")
             yield FavouritesView(id="view_favourites")
@@ -336,8 +332,6 @@ class AmeApp(App):
             self._safe_call(lambda: self.query_one("#view_trending", TrendingView).hide_loading())
             self._safe_call(self.notify, f"could not load recommendations: {e}", severity="error")
 
-        self._safe_call(self._set_status, "loading moods…")
-
     @work(group="rec_loader", exclusive=True, thread=True)
     def refresh_recommendations_worker(self) -> None:
         self._safe_call(self._set_status, "refreshing recommendations…")
@@ -355,19 +349,6 @@ class AmeApp(App):
         except Exception as e:
             self._safe_call(lambda: self.query_one("#view_trending", TrendingView).hide_loading())
             self._safe_call(self.notify, f"could not refresh recommendations: {e}", severity="error")
-        self._safe_call(self._set_status, "")
-        try:
-            categories = self.api.get_mood_categories()
-            self._safe_call(
-                lambda: self.query_one("#view_moods", MoodsPlaylistsView).populate_categories(
-                    categories
-                )
-            )
-            first_cat = next((c for cats in categories.values() for c in cats), None)
-            if first_cat:
-                self.load_category_playlists_worker(first_cat)
-        except Exception:
-            pass
         self._safe_call(self._set_status, "")
         self.check_update_quietly()
 
@@ -392,26 +373,6 @@ class AmeApp(App):
                 )
         except Exception:
             pass
-
-    @work(group="category_loader", exclusive=True, thread=True)
-    def load_category_playlists_worker(self, category: Category) -> None:
-        self._safe_call(self._set_status, f"loading {category.title}…")
-        self._safe_call(
-            lambda: self.query_one("#view_moods", MoodsPlaylistsView).show_loading(
-                "LOADING MOODS", f"fetching {category.title} playlists…"
-            )
-        )
-        try:
-            playlists = self.api.get_mood_playlists(category.params)
-            self._safe_call(
-                lambda: self.query_one("#view_moods", MoodsPlaylistsView).populate_playlists(
-                    category.title, playlists
-                )
-            )
-        except Exception as e:
-            self._safe_call(lambda: self.query_one("#view_moods", MoodsPlaylistsView).hide_loading())
-            self._safe_call(self.notify, f"could not load playlists: {e}", severity="warning")
-        self._safe_call(self._set_status, "")
 
     @work(group="playlist_loader", exclusive=True, thread=True)
     def load_playlist_worker(self, playlist: Playlist) -> None:
@@ -577,9 +538,6 @@ class AmeApp(App):
 
     def on_open_playlist_msg(self, msg: OpenPlaylistMsg) -> None:
         self.load_playlist_worker(msg.playlist)
-
-    def on_select_category_msg(self, msg: SelectCategoryMsg) -> None:
-        self.load_category_playlists_worker(msg.category)
 
     def on_execute_search_msg(self, msg: ExecuteSearchMsg) -> None:
         self._search_seq += 1
@@ -840,9 +798,6 @@ class AmeApp(App):
 
     def action_switch_view_radio(self) -> None:
         self.switch_view("view_radio")
-
-    def action_switch_view_moods(self) -> None:
-        self.switch_view("view_moods")
 
     def action_switch_view_search(self) -> None:
         self.action_focus_search()

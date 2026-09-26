@@ -27,7 +27,6 @@ from theme import ThemeColors
 VIEWS: List[Tuple[str, str, str]] = [
     ("t", "trending", "view_trending"),
     ("r", "radio", "view_radio"),
-    ("m", "moods", "view_moods"),
     ("s", "search", "view_search"),
     ("F", "favourites", "view_favourites"),
     ("q", "queue", "view_queue"),
@@ -584,7 +583,7 @@ class HelpScreen(ModalScreen):
         ("d", "remove from queue / favourites"),
         ("S / c", "shuffle / clear queue"),
         ("/", "focus search"),
-        ("t r m s F q", "jump to view"),
+        ("t r s F q", "jump to view"),
         ("u", "refresh recommendations"),
         ("U", "check for updates"),
         ("v", "toggle the visualizer"),
