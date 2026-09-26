@@ -42,7 +42,8 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 ## Features
 
 - Zero authentication / guest mode (`YTMusic()` with no credentials).
-- Trending charts, mood and genre browsing, search and song radio.
+- Dynamic AI & algorithmic recommendations seeded from your starred favourites and playback history.
+- Live real-time trending songs and chart playlists that continuously update.
 - Persistent favourites — star songs with `f` and revisit them from the
   favourites view (`F`), saved to `~/.local/share/ame/favourites.json`.
 - Infinite radio plus continuous autoplay when the queue runs dry.
@@ -62,6 +63,7 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `←` / `→` | seek −5s / +5s |
 | `+` / `-` | volume up / down |
 | `j` / `k` | move down / up |
+| `[` / `]` | switch sub-tab (`recommended` / `trending` / `playlists`) |
 | `enter` | play highlighted item |
 | `a` | append highlighted track or playlist to the queue |
 | `A` | queue every track in the current view |
@@ -73,6 +75,7 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `S` / `c` | shuffle / clear the queue |
 | `/` | focus search |
 | `t` / `r` / `m` / `s` / `F` / `q` | jump to trending / radio / moods / search / favourites / queue |
+| `u` | refresh recommendations with fresh picks |
 | `v` | show / hide the spectrum visualizer |
 | `esc` | back or close overlay |
 | `T` | re-sync the Omarchy theme |

@@ -146,38 +146,45 @@ class TableFitMixin:
 
 
 # --------------------------------------------------------------------------- #
-# 1. Trending
+# 1. Trending & Recommendations
 # --------------------------------------------------------------------------- #
 class TrendingView(TableFitMixin, Widget):
-    """Top trending tracks and chart playlists."""
+    """Top trending tracks, AI recommendations, and chart playlists."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.tracks: List[Track] = []
+        self.recommended_tracks: List[Track] = []
+        self.trending_tracks: List[Track] = []
         self.playlists: List[Playlist] = []
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
             yield SectionHeader(id="trending_header", classes="section_header")
-            with TabbedContent(initial="tab_trending_tracks", id="trending_tabs"):
-                with TabPane("songs", id="tab_trending_tracks"):
+            with TabbedContent(initial="tab_recommended", id="trending_tabs"):
+                with TabPane("recommended", id="tab_recommended"):
+                    yield DataTable(id="recommended_tracks_table", cursor_type="row")
+                with TabPane("trending", id="tab_trending_tracks"):
                     yield DataTable(id="trending_tracks_table", cursor_type="row")
                 with TabPane("playlists", id="tab_chart_playlists"):
                     yield DataTable(id="trending_playlists_table", cursor_type="row")
 
     def on_mount(self) -> None:
+        self.query_one("#recommended_tracks_table", DataTable).add_columns(
+            ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
+        )
         self.query_one("#trending_tracks_table", DataTable).add_columns(
             ("#", "num"), ("TITLE", "title"), ("ARTIST", "artist"), ("TIME", "time")
         )
         self.query_one("#trending_playlists_table", DataTable).add_columns(
             ("#", "num"), ("PLAYLIST", "title"), ("CURATOR", "meta")
         )
-        self.query_one("#trending_header", SectionHeader).set_content("trending")
+        self.query_one("#trending_header", SectionHeader).set_content("trending & recommendations")
         self._fit_tables()
 
     def _fitted_tables(self):
         try:
             return [
+                (self.query_one("#recommended_tracks_table", DataTable), "track"),
                 (self.query_one("#trending_tracks_table", DataTable), "track"),
                 (self.query_one("#trending_playlists_table", DataTable), "playlist"),
             ]
@@ -189,37 +196,67 @@ class TrendingView(TableFitMixin, Widget):
             tabs = self.query_one("#trending_tabs", TabbedContent)
             if tabs.active == "tab_chart_playlists":
                 return self.query_one("#trending_playlists_table", DataTable)
-            return self.query_one("#trending_tracks_table", DataTable)
+            elif tabs.active == "tab_trending_tracks":
+                return self.query_one("#trending_tracks_table", DataTable)
+            return self.query_one("#recommended_tracks_table", DataTable)
         except Exception:
             return None
 
-    def populate_data(self, tracks: List[Track], playlists: List[Playlist]) -> None:
-        self.tracks = tracks
-        self.playlists = playlists
+    def populate_data(
+        self,
+        recommended: List[Track],
+        trending_or_playlists: Any,
+        playlists: Optional[List[Playlist]] = None,
+    ) -> None:
+        if playlists is None:
+            # Backwards compatibility: populate_data(tracks, playlists)
+            self.recommended_tracks = recommended
+            self.trending_tracks = recommended
+            self.playlists = trending_or_playlists or []
+        else:
+            self.recommended_tracks = recommended
+            self.trending_tracks = trending_or_playlists or []
+            self.playlists = playlists or []
 
-        table = self.query_one("#trending_tracks_table", DataTable)
-        table.clear()
-        for idx, tr in enumerate(tracks, 1):
-            table.add_row(str(idx), tr.title, tr.artist, tr.display_duration,
-                          key=f"track_{tr.id}_{idx}")
+        rec_table = self.query_one("#recommended_tracks_table", DataTable)
+        rec_table.clear()
+        for idx, tr in enumerate(self.recommended_tracks, 1):
+            rec_table.add_row(str(idx), tr.title, tr.artist, tr.display_duration,
+                              key=f"rec_{tr.id}_{idx}")
+
+        tr_table = self.query_one("#trending_tracks_table", DataTable)
+        tr_table.clear()
+        for idx, tr in enumerate(self.trending_tracks, 1):
+            tr_table.add_row(str(idx), tr.title, tr.artist, tr.display_duration,
+                             key=f"tr_{tr.id}_{idx}")
 
         pl_table = self.query_one("#trending_playlists_table", DataTable)
         pl_table.clear()
-        for idx, p in enumerate(playlists, 1):
+        for idx, p in enumerate(self.playlists, 1):
             pl_table.add_row(str(idx), p.title, p.author or "YouTube Music",
                              key=f"pl_{p.id}_{idx}")
 
         self.query_one("#trending_header", SectionHeader).set_content(
-            "trending",
-            [(_count(len(tracks), "song"), False), (_count(len(playlists), "chart"), False)],
+            "trending & recommendations",
+            [
+                (_count(len(self.recommended_tracks), "recommendation"), False),
+                (_count(len(self.trending_tracks), "trending song"), False),
+                (_count(len(self.playlists), "chart"), False),
+            ],
         )
         self._fit_tables()
 
     def get_selected_track(self) -> Optional[Track]:
         try:
-            table = self.query_one("#trending_tracks_table", DataTable)
-            if 0 <= table.cursor_row < len(self.tracks):
-                return self.tracks[table.cursor_row]
+            tabs = self.query_one("#trending_tabs", TabbedContent)
+            if tabs.active == "tab_trending_tracks":
+                table = self.query_one("#trending_tracks_table", DataTable)
+                if 0 <= table.cursor_row < len(self.trending_tracks):
+                    return self.trending_tracks[table.cursor_row]
+            elif tabs.active == "tab_recommended":
+                table = self.query_one("#recommended_tracks_table", DataTable)
+                if 0 <= table.cursor_row < len(self.recommended_tracks):
+                    return self.recommended_tracks[table.cursor_row]
         except Exception:
             pass
         return None
@@ -234,16 +271,32 @@ class TrendingView(TableFitMixin, Widget):
         return None
 
     def get_all_tracks(self) -> List[Track]:
-        return list(self.tracks)
+        try:
+            tabs = self.query_one("#trending_tabs", TabbedContent)
+            if tabs.active == "tab_trending_tracks":
+                return list(self.trending_tracks)
+        except Exception:
+            pass
+        return list(self.recommended_tracks)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id == "trending_tracks_table":
-            if 0 <= event.cursor_row < len(self.tracks):
-                tr = self.tracks[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.tracks[event.cursor_row + 1:]))
+        if event.data_table.id == "recommended_tracks_table":
+            if 0 <= event.cursor_row < len(self.recommended_tracks):
+                tr = self.recommended_tracks[event.cursor_row]
+                self.post_message(PlayTrackMsg(tr, self.recommended_tracks[event.cursor_row + 1:]))
+        elif event.data_table.id == "trending_tracks_table":
+            if 0 <= event.cursor_row < len(self.trending_tracks):
+                tr = self.trending_tracks[event.cursor_row]
+                self.post_message(PlayTrackMsg(tr, self.trending_tracks[event.cursor_row + 1:]))
         elif event.data_table.id == "trending_playlists_table":
             if 0 <= event.cursor_row < len(self.playlists):
                 self.post_message(OpenPlaylistMsg(self.playlists[event.cursor_row]))
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        self._fit_tables()
+        w = self.primary_widget()
+        if w:
+            w.focus()
 
     def refresh_theme(self) -> None:
         self.query_one("#trending_header", SectionHeader).refresh()

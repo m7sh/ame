@@ -33,7 +33,7 @@ from typing import Optional
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import ContentSwitcher, Input
+from textual.widgets import ContentSwitcher, Input, TabbedContent, TabPane
 from textual import work
 from textual import events
 
@@ -106,6 +106,9 @@ class AmeApp(App):
         Binding("m", "switch_view_moods", "Moods", show=False),
         Binding("s", "switch_view_search", "Search", show=False),
         Binding("q", "switch_view_queue", "Queue", show=False),
+        Binding("left_square_bracket", "prev_tab", "Previous Tab", show=False),
+        Binding("right_square_bracket", "next_tab", "Next Tab", show=False),
+        Binding("u", "refresh_recommendations", "Refresh Recs", show=False),
     ]
 
     def __init__(self) -> None:
@@ -307,18 +310,39 @@ class AmeApp(App):
     # ------------------------------------------------------------------ #
     @work(group="initial_loader", exclusive=True, thread=True)
     def load_initial_data(self) -> None:
-        self._safe_call(self._set_status, "loading charts…")
+        self._safe_call(self._set_status, "loading recommendations & trending…")
         try:
-            tracks, playlists = self.api.get_charts()
+            favs = self.favourites.all()
+            recs = self.api.get_recommendations(favourites=favs, history=self.player.history)
+            trending = self.api.get_trending_songs()
+            _, playlists = self.api.get_charts()
             self._safe_call(
                 lambda: self.query_one("#view_trending", TrendingView).populate_data(
-                    tracks, playlists
+                    recs, trending, playlists
                 )
             )
         except Exception as e:
-            self._safe_call(self.notify, f"could not load charts: {e}", severity="error")
+            self._safe_call(self.notify, f"could not load recommendations: {e}", severity="error")
 
         self._safe_call(self._set_status, "loading moods…")
+
+    @work(group="rec_loader", exclusive=True, thread=True)
+    def refresh_recommendations_worker(self) -> None:
+        self._safe_call(self._set_status, "refreshing recommendations…")
+        try:
+            favs = self.favourites.all()
+            recs = self.api.get_recommendations(favourites=favs, history=self.player.history)
+            trending = self.api.get_trending_songs()
+            _, playlists = self.api.get_charts()
+            self._safe_call(
+                lambda: self.query_one("#view_trending", TrendingView).populate_data(
+                    recs, trending, playlists
+                )
+            )
+            self._safe_call(self.notify, "recommendations updated")
+        except Exception as e:
+            self._safe_call(self.notify, f"could not refresh recommendations: {e}", severity="error")
+        self._safe_call(self._set_status, "")
         try:
             categories = self.api.get_mood_categories()
             self._safe_call(
@@ -659,7 +683,37 @@ class AmeApp(App):
         self._focus_content()
 
     def action_switch_view_trending(self) -> None:
-        self.switch_view("view_trending")
+        if self.active_view_id == "view_trending":
+            self.refresh_recommendations_worker()
+        else:
+            self.switch_view("view_trending")
+
+    def action_refresh_recommendations(self) -> None:
+        self.refresh_recommendations_worker()
+
+    def action_next_tab(self) -> None:
+        try:
+            view = self.query_one(f"#{self.active_view_id}")
+            tabs = view.query_one(TabbedContent)
+            panes = [p.id for p in tabs.query(TabPane)]
+            if panes and tabs.active in panes:
+                curr_idx = panes.index(tabs.active)
+                next_idx = (curr_idx + 1) % len(panes)
+                tabs.active = panes[next_idx]
+        except Exception:
+            pass
+
+    def action_prev_tab(self) -> None:
+        try:
+            view = self.query_one(f"#{self.active_view_id}")
+            tabs = view.query_one(TabbedContent)
+            panes = [p.id for p in tabs.query(TabPane)]
+            if panes and tabs.active in panes:
+                curr_idx = panes.index(tabs.active)
+                prev_idx = (curr_idx - 1) % len(panes)
+                tabs.active = panes[prev_idx]
+        except Exception:
+            pass
 
     def action_switch_view_radio(self) -> None:
         self.switch_view("view_radio")
