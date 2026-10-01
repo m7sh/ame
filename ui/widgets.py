@@ -459,6 +459,7 @@ class PlayerBar(Widget):
         self._pos: float = 0.0
         self._dur: float = 0.0
         self._state: Tuple[bool, bool, bool] = (False, False, False)
+        self._loop_mode: str = "off"
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="player_row"):
@@ -507,10 +508,19 @@ class PlayerBar(Widget):
         total = format_seconds(self._dur) if self._dur > 0 else "--:--"
         quality = f"  [{t.border}]{self._quality}[/]" if self._quality else ""
 
+        loop_badge = ""
+        if self._loop_mode == "loop_one":
+            loop_badge = f"  [bold {t.accent}][↻ LOOP][/]"
+        elif self._loop_mode == "stop_after_one":
+            loop_badge = f"  [bold {t.warning}][■ STOP][/]"
+        elif self._loop_mode == "off":
+            loop_badge = f"  [{t.muted}][→ OFF][/]"
+
         meta.update(
             f"[bold {t.foreground}]{elapsed} / {total}[/]"
             f"{quality}   "
             f"[bold {color}]{glyph} {label}[/]"
+            f"{loop_badge}"
         )
 
     def set_track(self, track: Optional[Track], quality: str = "") -> None:
@@ -532,6 +542,10 @@ class PlayerBar(Widget):
             bar.buffering = self._state[2]
         except Exception:
             pass
+        self._render_meta()
+
+    def set_loop_mode(self, mode: str) -> None:
+        self._loop_mode = mode
         self._render_meta()
 
     def set_state(

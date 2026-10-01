@@ -107,6 +107,7 @@ class AmeApp(App):
         Binding("T", "reload_theme", "Sync Theme", show=False),
         Binding("question_mark", "show_help", "Help", show=False),
         Binding("v", "toggle_visualizer", "Visualizer", show=False),
+        Binding("l", "cycle_loop", "Loop Mode", show=False),
         Binding("Q", "quit_app", "Quit", show=False),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         Binding("t", "switch_view_trending", "Trending", show=False),
@@ -566,6 +567,13 @@ class AmeApp(App):
 
     def action_prev_track(self) -> None:
         self.player.prev_track()
+
+    def action_cycle_loop(self) -> None:
+        mode = self.player.cycle_loop_mode()
+        try:
+            self.query_one("#player_bar", PlayerBar).set_loop_mode(mode.value)
+        except Exception:
+            pass
 
     def action_cursor_down(self) -> None:
         focused = self.focused
