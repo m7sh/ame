@@ -14,8 +14,22 @@ import socket
 import atexit
 import threading
 import subprocess
+from enum import Enum
 from typing import Optional, List, Callable, Dict, Any
 from api import Track, StreamResolver
+
+
+class LoopMode(Enum):
+    """Playback loop behavior when a track ends."""
+
+    OFF = "off"
+    LOOP_ONE = "loop_one"
+    STOP_AFTER_ONE = "stop_after_one"
+
+    def next_mode(self) -> "LoopMode":
+        order = [LoopMode.OFF, LoopMode.LOOP_ONE, LoopMode.STOP_AFTER_ONE]
+        idx = order.index(self)
+        return order[(idx + 1) % len(order)]
 
 
 class MPVPlayer:
@@ -47,6 +61,7 @@ class MPVPlayer:
         self.volume: int = 80
         self.playback_pos: float = 0.0
         self.duration: float = 0.0
+        self.loop_mode: LoopMode = LoopMode.OFF
 
         # UI Callbacks
         self.on_track_change: Optional[Callable[[Optional[Track]], None]] = None
@@ -193,13 +208,28 @@ class MPVPlayer:
         """Called when a track finishes naturally."""
         self.playback_pos = 0.0
         self.duration = 0.0
+
+        # LOOP_ONE: replay current track without touching queue
+        if self.loop_mode == LoopMode.LOOP_ONE and self.current_track:
+            self._play_track_sync(self.current_track)
+            return
+
+        # STOP_AFTER_ONE: halt, preserve queue and current track
+        if self.loop_mode == LoopMode.STOP_AFTER_ONE:
+            self.is_playing = False
+            self.is_paused = False
+            self.is_buffering = False
+            if self.on_state_change:
+                self.on_state_change(False, False, False)
+            return
+
+        # OFF: advance queue or trigger autoplay
         if self.queue:
             next_t = self.queue.pop(0)
             if self.on_queue_change:
                 self.on_queue_change()
             self._play_track_sync(next_t)
         else:
-            # Queue is empty - check autoplay
             last_track = self.current_track
             self.is_playing = False
             self.current_track = None
@@ -325,6 +355,11 @@ class MPVPlayer:
                 if self.on_queue_change:
                     self.on_queue_change()
                 self.play(track)
+
+    def cycle_loop_mode(self) -> LoopMode:
+        """Cycle loop mode: OFF -> LOOP_ONE -> STOP_AFTER_ONE -> OFF."""
+        self.loop_mode = self.loop_mode.next_mode()
+        return self.loop_mode
 
     def next_track(self) -> None:
         """Advance to next track in queue or trigger autoplay."""
