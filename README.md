@@ -10,6 +10,8 @@ audio cache, and headless `mpv` daemons for gapless playback, equal-power
 crossfade, and loudness normalization. The interface is deliberately sparse:
 one tab bar, one list, and a slim player — nothing else competing for attention.
 
+> **Disclaimer:** `ame` does **not** host, mirror, or distribute any audio, artwork, or lyrics. It runs purely locally on your device as an unauthenticated client/scraper fetching publicly available internet sources (`YouTube Music`, `yt-dlp`, `LRCLIB`) in a clean, respectful way with bounded local caching.
+
 ---
 
 ## Design
@@ -226,6 +228,12 @@ and registers it as a Textual `Theme` with custom variables (`$ame-accent`,
 file changes, the app registers a fresh theme and reassigns it — Textual
 re-applies every variable live, so nothing on disk is touched and the
 interface never re-parses a stylesheet mid-session.
+
+## Content & Source Notice
+
+- **No media hosting**: `ame` operates with zero backend servers and never hosts, stores centrally, or redistributes copyrighted audio, images, or lyrics.
+- **Public internet scraping**: Discovery, streams, cover artwork, and lyrics are fetched directly on demand from publicly accessible internet endpoints (`ytmusicapi` / YouTube Music InnerTube, `yt-dlp`, and `LRCLIB`) with polite client headers and bounded on-disk caching (`~/.cache/ame`).
+- All tracks, metadata, cover art, and lyrics remain the property of their respective copyright holders.
 
 ## License
 
