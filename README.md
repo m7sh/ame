@@ -4,9 +4,11 @@
 > Runs entirely in **guest mode** — no login, cookies or API keys.
 
 `ame` (雨, "rain") is built with [Textual](https://textual.textualize.io/), uses
-`ytmusicapi` for discovery, `yt-dlp` to resolve audio streams and a headless
-`mpv` daemon for playback. The interface is deliberately sparse: one tab bar,
-one list, and a slim player — nothing else competing for attention.
+`ytmusicapi` for discovery, direct InnerTube clients (with `yt-dlp` failsafe)
+for low-latency stream resolution and 1 MiB byte-range probing, an on-disk LRU
+audio cache, and headless `mpv` daemons for gapless playback, equal-power
+crossfade, and loudness normalization. The interface is deliberately sparse:
+one tab bar, one list, and a slim player — nothing else competing for attention.
 
 ---
 
@@ -14,9 +16,7 @@ one list, and a slim player — nothing else competing for attention.
 
 - **Terminal-native chrome** — no emoji, no boxes-within-boxes. Unicode
   rules, block glyphs and reverse-style selection only.
-- **One screen at a time** — the sidebar and status badges are gone; views
-  are switched from a single tab line, where each view's hotkey is
-  highlighted and works as its shortcut (`t` `r` `m` `s` `F` `q`).
+- **Sidebar & tabbed layout** — collapsible left navigation rail (`b` on terminals `>= 94` cols) paired with a slim top bar: **Home** (`h`/`t`: *for you*, *recently played*, *quick picks*, *charts & mixes*), **Explore** (`e`: *new releases*, *trending*, *moods & genres*), **Radio** (`r`), **Search** (`s`), **Library** (`F`: *liked songs*, *recently played*, *artists*), **Queue** (`q`), **Window** (`w`), **Stats** (`Y`), and **Settings** (`,`).
 - **Two-line player** — now-playing with time and playback status, then a
   full-width clickable seek bar. No key-hint bar; press `?` when you need the
   cheatsheet.
@@ -27,12 +27,10 @@ one list, and a slim player — nothing else competing for attention.
 - **Terminal transparency** — the app paints no background of its own; every
   panel resolves to `ansi_default`, so your terminal's opacity/blur shows
   through and the UI blends into the terminal background.
-- **Matrix visualizer** — `cava` taps the PipeWire monitor and drives a
-  digital-rain field at the top of the screen: each column is a falling stream
-  of katakana/digit glyphs whose speed and trail length follow its frequency
-  band, with a near-white head fading into the active theme's accent color. It
-  appears only while audio is playing; press `v` to disable it, and it is
-  omitted automatically when `cava` is not installed.
+- **Sleek graphic equalizer** — when `cava` is installed, an unobtrusive
+  1-row symmetrical block equalizer (`▁▂▃▄▅▆▇█`) animates cleanly above the
+  bottom player bar alongside a live EQ indicator on active playback (`v`
+  toggles it on/off, omitted automatically if `cava` is absent).
 
 The chrome takes its cues from [cliamp](https://github.com/bjarneo/cliamp):
 a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
@@ -42,14 +40,17 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 ## Features
 
 - Zero authentication / guest mode (`YTMusic()` with no credentials).
-- Dynamic AI & algorithmic recommendations seeded from your starred favourites and playback history.
-- Live real-time trending songs and chart playlists that continuously update.
-- Persistent favourites — star songs with `f` and revisit them from the
-  favourites view (`F`), saved to `~/.local/share/ame/favourites.json`.
+- Personalized recommendation & mix engine (`recommendations.py`): recency + play-count + favourites taste scoring, audio/video recording deduplication, per-artist diversity caps, time-of-day mood curations, and similar-artist discovery.
+- **Explore** (`e`) with live new releases (full album drill-down), trending tracks, and moods & genres playlists.
+- Persistent **Library** (`F`) & **Settings** (`,`) — starred songs, local recently played history (`~/.local/share/ame/recent.json`), top artists, and persistent playback preferences (`~/.local/share/ame/settings.json`).
 - Infinite radio plus continuous autoplay when the queue runs dry.
-- Full queue control: append, play-all, shuffle, remove and clear.
-- Asynchronous discovery and stream resolution — the UI never blocks.
-- Headless `mpv` playback over a JSON IPC socket with stream prefetching.
+- Full queue control: append, play-all, play-next (`i`), reorder (`J`/`K`), shuffle, remove and clear.
+- Asynchronous discovery, coalesced stream resolution, 1 MiB pre-playback probing, and mid-playback refusal recovery.
+- Bounded 512 MiB on-disk LRU audio cache (`~/.cache/ame/audio`) with chunked prefetching.
+- Headless `mpv` playback over JSON IPC with native gapless queue arming, dual-player equal-power crossfade (`x`), loop modes (`l`), playback speed (`C`), sleep timer (`Z`), and YouTube `loudnessDb` normalization (`N`).
+- Maximized Now Playing album window (`w`/`m`) with Sixel/TGP/Halfcell cover art, split synced lyrics **open by default** (`L` via LRCLIB / YouTube Music), interactive Up Next side panel (`O`), dynamic album-art accent tinting (`D`), two-row transport controls, and NerdStats.
+- Search songs, albums, artists & playlists with album/artist drill-down (`g`/`G`).
+- Local-only Replay & listening stats (`Y`) with hourly activity bars, plus MPRIS2 (`playerctl`/Waybar) and Discord Rich Presence.
 - Real-time spectrum visualizer via `cava` (optional).
 
 ---
@@ -62,19 +63,30 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `n` / `p` | next / previous track |
 | `←` / `→` | seek −5s / +5s |
 | `+` / `-` | volume up / down |
+| `l` | cycle loop mode (`off` / `loop one` / `stop after one`) |
+| `x` | cycle crossfade (`off` / `3s` / `6s`) |
+| `N` | toggle loudness normalization |
+| `C` | cycle playback speed (`1×` / `1.25×` / `1.5×` / `2×` / `0.75×`) |
+| `Z` | cycle sleep timer (`off` / `15m` / `30m` / `45m` / `60m`) |
 | `j` / `k` | move down / up |
-| `[` / `]` | switch sub-tab (`recommended` / `trending` / `playlists`) |
-| `enter` | play highlighted item |
-| `a` | append highlighted track or playlist to the queue |
+| `J` / `K` | reorder queue item down / up |
+| `[` / `]` | switch sub-tab |
+| `enter` | play highlighted item, open album / artist / mood, or toggle setting |
+| `a` / `i` | append highlighted track or insert as Play Next |
 | `A` | queue every track in the current view |
 | `P` | play every track in the current view |
 | `R` | start a song radio from the highlighted track |
+| `g` / `G` | open artist / album page for highlighted or playing track |
 | `f` | add / remove the highlighted (or playing) track from favourites |
-| `F` | open the favourites view |
+| `F` | open Library (liked songs, recently played, top artists) |
 | `d` | remove the highlighted track from the queue or favourites |
 | `S` / `c` | shuffle / clear the queue |
 | `/` | focus search |
-| `t` / `r` / `s` / `F` / `q` | jump to trending / radio / search / favourites / queue |
+| `h` / `t` / `e` / `r` / `s` / `F` / `q` / `w` / `Y` / `,` | jump to Home / Explore / Radio / Search / Library / Queue / Window / Stats / Settings |
+| `b` | toggle navigation sidebar |
+| `w` / `m` | maximize / minimize the Now Playing album window |
+| `L` / `O` | toggle synced lyrics / Up Next split panel in Now Playing |
+| `D` | toggle dynamic album-art accent tinting |
 | `u` | refresh recommendations with fresh picks |
 | `U` | check for available updates |
 | `v` | show / hide the spectrum visualizer |
@@ -179,20 +191,28 @@ ame --uninstall -y             # Proceed without confirmation prompts
 
 ```
 ame/
-├── app.py            # Textual app: layout, bindings, workers, theme sync
-├── api.py            # Guest-mode ytmusicapi client + yt-dlp stream resolver
-├── player.py         # Headless mpv IPC client, queue state machine
-├── favourites.py     # JSON-backed persistent favourites store
-├── spectrum.py       # cava subprocess bridge for the spectrum visualizer
-├── theme.py          # Omarchy palette detection -> native Textual Theme
-├── styles.tcss       # Static stylesheet driven by theme CSS variables
+├── app.py              # Textual app: layout, bindings, workers, theme sync
+├── api.py              # Guest-mode ytmusicapi client + StreamResolver bridge
+├── artwork.py          # Cover art cache, Sixel/Halfcell helpers & accent extraction
+├── stream_resolver.py  # InnerTube client walk, 1 MiB probing & yt-dlp failsafe
+├── audio_cache.py      # Bounded 512 MiB LRU disk cache with 2 MiB chunked downloads
+├── player.py           # Headless mpv IPC daemons: gapless, crossfade, recovery, loudness
+├── favourites.py       # JSON-backed persistent favourites store
+├── settings.py         # Persistent app preferences & local recently played history
+├── lyrics.py           # LRCLIB + YTMusic synced LRC lyrics manager
+├── stats.py            # Monthly listening Replay & hourly activity stats store
+├── integrations.py     # MPRIS2 & Discord Rich Presence controllers
+├── mpris_bridge.py     # System python3 D-Bus MPRIS2 service bridge
+├── spectrum.py         # cava subprocess bridge for the spectrum visualizer
+├── theme.py            # Omarchy palette detection -> native Textual Theme
+├── styles.tcss         # Static stylesheet driven by theme CSS variables
 ├── requirements.txt
-├── ame               # Launcher script
-├── update.sh         # Self-updater script
-├── uninstall.sh      # Uninstaller script
+├── ame                 # Launcher script
+├── update.sh           # Self-updater script
+├── uninstall.sh        # Uninstaller script
 └── ui/
-    ├── widgets.py    # TopBar, SectionHeader, SeekBar, PlayerBar, Spectrum
-    └── views.py      # Trending, Radio, Playlist, Search, Favourites, Queue
+    ├── widgets.py      # TopBar, Sidebar, SectionHeader, SeekBar, PlayerBar, NowPlayingView, Spectrum
+    └── views.py        # Home, Explore, Mood, Radio, Album/Playlist, Artist, Search, Library, Queue, Stats, Settings
 ```
 
 ---

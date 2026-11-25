@@ -1,17 +1,24 @@
 """
-api.py - Unauthenticated YouTube Music API Layer & Stream Resolver.
+api.py - Unauthenticated YouTube Music API Layer & Stream Resolver bridge.
 
 Uses ytmusicapi in guest mode (YTMusic()) with zero login/auth required.
-Resolves direct high-fidelity audio streams using yt-dlp with in-memory caching.
+Stream resolution is delegated to stream_resolver.StreamResolver (InnerTube
+client walk + 1 MiB byte-range probing + yt-dlp failsafe).
 """
 
-import time
-import subprocess
 import random
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from ytmusicapi import YTMusic
-import yt_dlp
+
+from stream_resolver import (  # noqa: F401
+    PermanentlyUnplayableError,
+    ResolvedStream,
+    StreamResolver,
+    media_headers_for_url,
+)
 
 
 def parse_duration(val: Any) -> Tuple[str, int]:
@@ -20,7 +27,7 @@ def parse_duration(val: Any) -> Tuple[str, int]:
         return "--:--", 0
 
     if isinstance(val, (int, float)):
-        seconds = int(val)
+        seconds = max(0, int(val))
         m, s = divmod(seconds, 60)
         h, m = divmod(m, 60)
         if h > 0:
@@ -34,7 +41,7 @@ def parse_duration(val: Any) -> Tuple[str, int]:
             if len(parts) == 2:
                 seconds = int(parts[0]) * 60 + int(parts[1])
                 return f"{int(parts[0]):02d}:{int(parts[1]):02d}", seconds
-            elif len(parts) == 3:
+            if len(parts) == 3:
                 seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
                 return f"{int(parts[0]):02d}:{int(parts[1]):02d}:{int(parts[2]):02d}", seconds
         except ValueError:
@@ -64,14 +71,101 @@ def extract_artists_str(artists: Any) -> str:
         names = []
         for a in artists:
             if isinstance(a, dict) and "name" in a:
-                names.append(a["name"])
+                names.append(str(a["name"]))
             elif isinstance(a, str):
                 names.append(a)
         if names:
             return ", ".join(names)
     elif isinstance(artists, dict) and "name" in artists:
-        return artists["name"]
+        return str(artists["name"])
     return "Unknown Artist"
+
+
+def _extract_thumbnail_url(item: Dict[str, Any]) -> str:
+    """Safely extract the highest-resolution thumbnail URL from diverse ytmusicapi shapes."""
+    thumbs = item.get("thumbnails")
+    if not thumbs:
+        thumbs = item.get("thumbnail")
+    if isinstance(thumbs, dict):
+        thumbs = thumbs.get("thumbnails", [])
+    if isinstance(thumbs, list) and thumbs:
+        last = thumbs[-1]
+        if isinstance(last, dict):
+            return str(last.get("url") or "")
+    return ""
+
+
+def _extract_album_name(item: Dict[str, Any]) -> str:
+    album_raw = item.get("album")
+    if isinstance(album_raw, dict):
+        return str(album_raw.get("name") or "")
+    if isinstance(album_raw, str):
+        return album_raw
+    return ""
+
+
+def _extract_album_id(item: Dict[str, Any]) -> str:
+    album_raw = item.get("album")
+    if isinstance(album_raw, dict):
+        return str(album_raw.get("id") or "")
+    return ""
+
+
+def _extract_artist_id(item: Dict[str, Any]) -> str:
+    artists = item.get("artists")
+    if isinstance(artists, list):
+        for a in artists:
+            if isinstance(a, dict) and a.get("id"):
+                return str(a["id"])
+    elif isinstance(artists, dict) and artists.get("id"):
+        return str(artists["id"])
+    return ""
+
+
+def _parse_track(item: Dict[str, Any]) -> Optional["Track"]:
+    vid = item.get("videoId")
+    if not vid:
+        return None
+    dur_raw = item.get("duration") or item.get("length") or item.get("duration_seconds")
+    dur_str, dur_sec = parse_duration(dur_raw)
+    return Track(
+        id=str(vid),
+        title=str(item.get("title") or "Unknown Track"),
+        artist=extract_artists_str(item.get("artists")),
+        album=_extract_album_name(item),
+        album_id=_extract_album_id(item),
+        artist_id=_extract_artist_id(item),
+        duration=dur_str,
+        duration_seconds=dur_sec,
+        thumbnail=_extract_thumbnail_url(item),
+        raw=item,
+    )
+
+
+def _parse_playlist(
+    item: Dict[str, Any],
+    default_author: str = "YouTube Music",
+    default_count: str = "",
+) -> Optional["Playlist"]:
+    pid = item.get("browseId") or item.get("playlistId")
+    if not pid:
+        return None
+    author_raw = item.get("author")
+    author_name = default_author
+    if isinstance(author_raw, dict):
+        author_name = str(author_raw.get("name") or default_author)
+    elif isinstance(author_raw, str) and author_raw:
+        author_name = author_raw
+
+    return Playlist(
+        id=str(pid),
+        title=str(item.get("title") or "Playlist"),
+        author=author_name,
+        track_count=str(item.get("itemCount") or default_count),
+        description=str(item.get("description") or ""),
+        thumbnail=_extract_thumbnail_url(item),
+        raw=item,
+    )
 
 
 @dataclass
@@ -80,6 +174,8 @@ class Track:
     title: str
     artist: str
     album: str = ""
+    album_id: str = ""
+    artist_id: str = ""
     duration: str = ""
     duration_seconds: int = 0
     thumbnail: str = ""
@@ -112,246 +208,420 @@ class Playlist:
 
 
 @dataclass
+class Album:
+    id: str
+    title: str
+    artist: str = ""
+    year: str = ""
+    track_count: str = ""
+    thumbnail: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Artist:
+    id: str
+    name: str
+    subscribers: str = ""
+    thumbnail: str = ""
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class Category:
     title: str
     params: str
     category_type: str = "Mood"
 
 
-class StreamResolver:
-    """Resolves and caches audio stream URLs using yt-dlp."""
-
-    def __init__(self):
-        self._cache: Dict[str, Tuple[str, str, float]] = {}  # video_id -> (url, quality, expire_ts)
-        self._ydl_opts = {
-            "format": "bestaudio/best",
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "extract_flat": False,
-        }
-
-    def resolve(self, video_id: str) -> Tuple[str, str]:
-        """
-        Resolve audio stream URL and quality info for a video_id.
-        Returns: (stream_url, quality_info_str)
-        """
-        now = time.time()
-        # Check cache (expire after 4 hours = 14400s)
-        if video_id in self._cache:
-            cached_url, quality, exp = self._cache[video_id]
-            if now < exp:
-                return cached_url, quality
-
-        # Extract using yt_dlp python library
-        try:
-            with yt_dlp.YoutubeDL(self._ydl_opts) as ydl:
-                info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
-                stream_url = info.get("url")
-                if stream_url:
-                    acodec = (info.get("acodec") or "audio").replace("none", "").strip().upper()
-                    abr = info.get("abr")
-                    quality = f"{acodec} {int(abr)}kbps" if abr else (acodec or "Best Audio")
-                    # Cache valid for 4 hours
-                    self._cache[video_id] = (stream_url, quality, now + 14400)
-                    return stream_url, quality
-        except Exception as e:
-            # Fallback to CLI command
-            try:
-                cmd = ["yt-dlp", "-f", "bestaudio", "-g", video_id]
-                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
-                if res.returncode == 0 and res.stdout.strip():
-                    stream_url = res.stdout.strip().split("\n")[0]
-                    quality = "Opus Best Audio"
-                    self._cache[video_id] = (stream_url, quality, now + 14400)
-                    return stream_url, quality
-            except Exception:
-                pass
-            raise RuntimeError(f"Failed to resolve audio stream for video {video_id}: {e}")
-
-        raise RuntimeError(f"No audio stream URL found for video {video_id}")
-
-
 class YTMusicAPI:
     """Guest-mode YouTube Music API client with helper parsing methods."""
 
-    def __init__(self):
-        # Guest mode - zero auth required!
+    def __init__(self) -> None:
+        # Guest mode - zero auth required.
+        self._yt_local = threading.local()
         self.yt = YTMusic()
         self.resolver = StreamResolver()
+
+    def _client(self) -> YTMusic:
+        """Return a thread-local YTMusic instance when called from worker threads."""
+        if not isinstance(self.yt, YTMusic):
+            return self.yt
+        if threading.current_thread() is threading.main_thread():
+            return self.yt
+        client = getattr(self._yt_local, "yt", None)
+        if client is None:
+            client = YTMusic()
+            self._yt_local.yt = client
+        return client
 
     def get_trending_songs(self, limit: int = 40) -> List[Track]:
         """
         Fetch real-time trending songs from YouTube Music Explore & Charts.
-        Unlike static chart playlists, this fetches dynamic live trending tracks.
         """
         tracks: List[Track] = []
-        seen: set = set()
+        seen: set[str] = set()
+        yt = self._client()
+        errors: List[Exception] = []
 
         try:
-            explore = self.yt.get_explore()
+            explore = yt.get_explore()
             trending_raw = explore.get("trending", {})
 
-            # 1. If YouTube Music provides a dynamic trending playlist, extract tracks from it
             pl_id = trending_raw.get("playlist") if isinstance(trending_raw, dict) else None
             if pl_id:
                 try:
                     _, pl_tracks = self.get_playlist(pl_id, limit=limit)
                     for tr in pl_tracks:
-                        if tr.id not in seen:
+                        if tr.id not in seen and len(tracks) < limit:
                             seen.add(tr.id)
                             tracks.append(tr)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    errors.append(exc)
 
-            # 2. Extract direct trending items from explore
             items = trending_raw.get("items", []) if isinstance(trending_raw, dict) else trending_raw
             if isinstance(items, list):
                 for item in items:
-                    vid = item.get("videoId")
-                    if vid and vid not in seen and len(tracks) < limit:
-                        seen.add(vid)
-                        dur_str, dur_sec = parse_duration(item.get("length") or item.get("duration"))
-                        album_val = item.get("album")
-                        album_name = album_val.get("name", "") if isinstance(album_val, dict) else (album_val or "")
-                        tracks.append(
-                            Track(
-                                id=vid,
-                                title=item.get("title", "Unknown Track"),
-                                artist=extract_artists_str(item.get("artists")),
-                                album=album_name,
-                                duration=dur_str,
-                                duration_seconds=dur_sec,
-                                raw=item,
-                            )
-                        )
-        except Exception:
-            pass
+                    if len(tracks) >= limit:
+                        break
+                    tr = _parse_track(item)
+                    if tr and tr.id not in seen:
+                        seen.add(tr.id)
+                        tracks.append(tr)
+        except Exception as exc:
+            errors.append(exc)
 
-        # 3. Fallback to chart playlist if explore didn't yield enough tracks
         if len(tracks) < 10:
             try:
-                charts = self.yt.get_charts()
+                charts = yt.get_charts()
                 playlists_raw = charts.get("videos", [])
-                fallback_id = playlists_raw[0].get("playlistId") if playlists_raw else "PL4fGSI1pDJn6t3TXLGiiJdD-sZbrG3tG0"
+                fallback_id = (
+                    playlists_raw[0].get("playlistId")
+                    if playlists_raw
+                    else "PL4fGSI1pDJn6t3TXLGiiJdD-sZbrG3tG0"
+                )
                 _, fallback_tracks = self.get_playlist(fallback_id, limit=limit)
                 for tr in fallback_tracks:
                     if tr.id not in seen and len(tracks) < limit:
                         seen.add(tr.id)
                         tracks.append(tr)
-            except Exception:
-                pass
+            except Exception as exc:
+                errors.append(exc)
+
+        if not tracks and errors:
+            raise errors[0]
 
         return tracks[:limit]
+
+    def _get_home_feed(self) -> Tuple[List[Track], List[Playlist]]:
+        """Parse personalized tracks & playlists from YouTube Music's Home shelves.
+
+        Mirrors quick-picks rules: skips stale Listen Again and History shelves,
+        prioritizes Quick Picks / Mixed shelves, and filters out podcast/episode shelves.
+        """
+        home_tracks: List[Track] = []
+        quick_tracks: List[Track] = []
+        home_playlists: List[Playlist] = []
+        seen_t: set[str] = set()
+        seen_p: set[str] = set()
+
+        try:
+            shelves = self._client().get_home(limit=5) or []
+        except Exception:
+            return [], []
+
+        for shelf in shelves:
+            if not isinstance(shelf, dict):
+                continue
+            title = str(shelf.get("title") or "").lower()
+            if any(skip in title for skip in ("recent", "history", "listen again", "podcast", "episode")):
+                continue
+            is_priority = any(k in title for k in ("quick", "pick", "mix", "recommend", "discover"))
+            for item in shelf.get("contents") or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("videoId"):
+                    tr = _parse_track(item)
+                    if tr and tr.id not in seen_t:
+                        seen_t.add(tr.id)
+                        if is_priority:
+                            quick_tracks.append(tr)
+                        else:
+                            home_tracks.append(tr)
+                elif item.get("playlistId") or (
+                    isinstance(item.get("browseId"), str)
+                    and item["browseId"].startswith(("VL", "PL", "RD", "OLAK"))
+                ):
+                    pl = _parse_playlist(item, default_author="Personalized Mix")
+                    if pl and pl.id not in seen_p:
+                        seen_p.add(pl.id)
+                        home_playlists.append(pl)
+
+        return quick_tracks + home_tracks, home_playlists
 
     def get_recommendations(
         self,
         favourites: Optional[List[Track]] = None,
         history: Optional[List[Track]] = None,
         limit: int = 50,
+        trending_seed: Optional[List[Track]] = None,
+        recent_history: Optional[List[Track]] = None,
+        stats_top_artists: Optional[List[Any]] = None,
+        stats_top_tracks: Optional[List[Track]] = None,
     ) -> List[Track]:
+        """Generate tailored, recording-deduped & artist-diverse picks.
+
+        Combines:
+        1. Watch radios seeded from weighted favourites + recent + monthly top tracks
+        2. Top-taste & similar ("Fans might also like") artist tracks for fresh discovery
+        3. YouTube Music Home Quick Picks / Mixed shelves
+        4. Current time-of-day mood playlist tracks
+        Filtered through `extend_station` (audio/video recording dedupe +
+        `PER_ARTIST_LIMIT = 2`), falling back to trending only for sparse/cold-start profiles.
         """
-        Generate dynamic AI & algorithmic recommendations.
-        Seeds from the user's favourites and recent playback history when available,
-        combined with YouTube Music's radio recommendation algorithm and
-        live discovery picks.
-        """
-        recommended_tracks: List[Track] = []
-        seen_ids: set = set()
+        from recommendations import (
+            ARTIST_POOL,
+            build_taste_profile,
+            extend_station,
+            interleave_buckets,
+            moods_for_hour,
+            weighted_sample,
+        )
 
-        # Collect user seeds (favourites prioritized, recent history secondary)
-        user_seeds: List[Track] = []
-        if favourites:
-            user_seeds.extend(favourites)
-            for f in favourites:
-                seen_ids.add(f.id)
+        profile = build_taste_profile(
+            favourites=favourites or [],
+            recent_history=recent_history or [],
+            session_history=history or [],
+            stats_top_artists=stats_top_artists or [],
+            stats_top_tracks=stats_top_tracks or [],
+        )
 
-        if history:
-            for h in reversed(history[-10:]):
-                if h.id not in seen_ids:
-                    user_seeds.append(h)
+        radio_bucket: List[Track] = []
+        artist_bucket: List[Track] = []
+        home_bucket: List[Track] = []
+        mood_bucket: List[Track] = []
 
-        # 1. Algorithmic recommendations from user seeds
-        if user_seeds:
-            sample_count = min(len(user_seeds), 3)
-            sampled_seeds = random.sample(user_seeds, sample_count)
-            for seed in sampled_seeds:
-                try:
-                    radio_tracks = self.get_radio(seed.id, limit=20)
-                    for tr in radio_tracks:
-                        if tr.id not in seen_ids:
-                            seen_ids.add(tr.id)
-                            recommended_tracks.append(tr)
-                except Exception:
-                    pass
+        sampled_seeds = weighted_sample(profile.seed_tracks[:12], 3) if profile.seed_tracks else []
+        if not sampled_seeds and trending_seed:
+            sampled_seeds = random.sample(trending_seed[:15], min(len(trending_seed[:15]), 2))
 
-        # 2. If more tracks are needed (or user has no favourites yet), seed from live trending
-        if len(recommended_tracks) < limit:
+        sampled_artists = weighted_sample(profile.artists[:ARTIST_POOL], 2) if profile.artists else []
+        hour_moods = moods_for_hour()
+
+        def _fetch_seed_radio(seed: Track) -> List[Track]:
             try:
-                trending_tracks = self.get_trending_songs(limit=25)
-                if trending_tracks:
-                    sample_explore = random.sample(trending_tracks, min(len(trending_tracks), 2))
-                    for tr_seed in sample_explore:
+                return self.get_radio(seed.id, limit=25)
+            except Exception:
+                return []
+
+        def _fetch_artist_discovery(artist_entry: Any) -> List[Track]:
+            aid = artist_entry.artist_id
+            if not aid:
+                try:
+                    found = self.search_artists(artist_entry.name, limit=1)
+                    if found:
+                        aid = found[0].id
+                except Exception:
+                    return []
+            if not aid:
+                return []
+            try:
+                _, top_songs, _ = self.get_artist(aid)
+                raw = self._client().get_artist(aid)
+                related_tracks: List[Track] = []
+                rel = raw.get("related", {}) if isinstance(raw, dict) else {}
+                for r in (rel.get("results") or [])[:2]:
+                    rid = str(r.get("browseId") or "")
+                    if rid.startswith("UC"):
                         try:
-                            radio_tracks = self.get_radio(tr_seed.id, limit=20)
-                            for tr in radio_tracks:
-                                if tr.id not in seen_ids and len(recommended_tracks) < limit:
-                                    seen_ids.add(tr.id)
-                                    recommended_tracks.append(tr)
+                            _, r_songs, _ = self.get_artist(rid)
+                            related_tracks.extend(r_songs[:6])
                         except Exception:
                             pass
+                out = [t for t in (related_tracks + top_songs) if t.id not in profile.heard_ids]
+                return out
+            except Exception:
+                return []
 
-                for tr in trending_tracks:
-                    if tr.id not in seen_ids and len(recommended_tracks) < limit:
-                        seen_ids.add(tr.id)
-                        recommended_tracks.append(tr)
+        def _fetch_mood_sample() -> List[Track]:
+            if not hour_moods:
+                return []
+            _, params, _ = hour_moods[0]
+            try:
+                pls = self.get_mood_playlists(params)
+                if not pls:
+                    return []
+                pick = random.choice(pls[:min(len(pls), 5)])
+                _, trs = self.get_playlist(pick.id, limit=20)
+                return trs
+            except Exception:
+                return []
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            f_home = pool.submit(self._get_home_feed)
+            f_radios = [pool.submit(_fetch_seed_radio, s) for s in sampled_seeds]
+            f_artists = [pool.submit(_fetch_artist_discovery, a) for a in sampled_artists]
+            f_mood = pool.submit(_fetch_mood_sample)
+
+            try:
+                home_tracks, _ = f_home.result(timeout=8)
+                home_bucket.extend(home_tracks)
+            except Exception:
+                pass
+            for f in f_radios:
+                try:
+                    radio_bucket.extend(f.result(timeout=8))
+                except Exception:
+                    pass
+            for f in f_artists:
+                try:
+                    artist_bucket.extend(f.result(timeout=8))
+                except Exception:
+                    pass
+            try:
+                mood_bucket.extend(f_mood.result(timeout=8))
             except Exception:
                 pass
 
-        # Shuffle recommendations to provide a dynamic mix on each load
-        random.shuffle(recommended_tracks)
+        # Mild freshness shuffle inside each bucket before round-robin interleaving
+        for bucket in (radio_bucket, artist_bucket, mood_bucket):
+            if len(bucket) > 2:
+                random.shuffle(bucket)
+
+        candidates = interleave_buckets(
+            [artist_bucket, radio_bucket, home_bucket, mood_bucket],
+            limit=max(limit, 40),
+        )
+
+        # Prefer unheard discovery tracks first; keep already-heard seeds only if sparse
+        fresh_candidates = [t for t in candidates if t.id not in profile.heard_ids]
+        recommended_tracks = extend_station([], fresh_candidates, limit=limit)
+
+        if len(recommended_tracks) < limit:
+            top_up = extend_station(recommended_tracks, candidates, limit=limit - len(recommended_tracks))
+            recommended_tracks.extend(top_up)
+
+        if len(recommended_tracks) < limit:
+            trending_tracks = trending_seed if trending_seed is not None else self.get_trending_songs(limit=25)
+            fresh_trending = [t for t in trending_tracks if t.id not in profile.heard_ids]
+            recommended_tracks.extend(
+                extend_station(recommended_tracks, fresh_trending or trending_tracks, limit=limit - len(recommended_tracks))
+            )
+
         return recommended_tracks[:limit]
 
-    def get_charts(self, country: str = "US") -> Tuple[List[Track], List[Playlist]]:
+    def get_recommended_playlists(
+        self,
+        favourites: Optional[List[Track]] = None,
+        recent_history: Optional[List[Track]] = None,
+        history: Optional[List[Track]] = None,
+        stats_top_artists: Optional[List[Any]] = None,
+        limit: int = 30,
+    ) -> List[Playlist]:
+        """Curate mixes: Home mixes, artist playlists, time-of-day moods & charts."""
+        from recommendations import (
+            ARTIST_POOL,
+            build_taste_profile,
+            moods_for_hour,
+            rank_mix_playlists,
+            weighted_sample,
+        )
+
+        profile = build_taste_profile(
+            favourites=favourites or [],
+            recent_history=recent_history or [],
+            session_history=history or [],
+            stats_top_artists=stats_top_artists or [],
+        )
+        sampled_artists = weighted_sample(profile.artists[:ARTIST_POOL], 2) if profile.artists else []
+        hour_moods = moods_for_hour()
+
+        home_playlists: List[Playlist] = []
+        artist_playlists: List[Playlist] = []
+        mood_playlists: List[Playlist] = []
+        chart_playlists: List[Playlist] = []
+
+        def _artist_mixes(name: str) -> List[Playlist]:
+            try:
+                pls = self.search_playlists(f"{name} mix", limit=4)
+                for p in pls:
+                    if not p.author or p.author == "Playlist":
+                        p.author = f"Mix · {name}"
+                return pls
+            except Exception:
+                return []
+
+        def _mood_mixes(label: str, params: str) -> List[Playlist]:
+            try:
+                pls = self.get_mood_playlists(params)[:4]
+                for p in pls:
+                    p.author = f"Mood · {label}"
+                return pls
+            except Exception:
+                return []
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            f_home = pool.submit(self._get_home_feed)
+            f_art = [pool.submit(_artist_mixes, a.name) for a in sampled_artists]
+            f_mood = [pool.submit(_mood_mixes, name, params) for name, params, _ in hour_moods[:2]]
+            f_charts = pool.submit(self.get_charts, "US", False)
+
+            try:
+                _, home_pls = f_home.result(timeout=8)
+                home_playlists.extend(home_pls)
+            except Exception:
+                pass
+            for f in f_art:
+                try:
+                    artist_playlists.extend(f.result(timeout=8))
+                except Exception:
+                    pass
+            for f in f_mood:
+                try:
+                    mood_playlists.extend(f.result(timeout=8))
+                except Exception:
+                    pass
+            try:
+                _, c_pls = f_charts.result(timeout=8)
+                chart_playlists.extend(c_pls)
+            except Exception:
+                pass
+
+        return rank_mix_playlists(
+            personalized=home_playlists + artist_playlists,
+            mood_playlists=mood_playlists,
+            charts=chart_playlists,
+            limit=limit,
+        )
+
+    def get_charts(
+        self, country: str = "US", include_tracks: bool = True
+    ) -> Tuple[List[Track], List[Playlist]]:
         """
-        Fetch top trending songs and chart playlists.
+        Fetch chart playlists (and optionally trending tracks).
         Returns: (top_tracks, chart_playlists)
         """
         chart_playlists: List[Playlist] = []
+        yt = self._client()
 
         try:
-            charts = self.yt.get_charts(country=country)
+            charts = yt.get_charts(country=country)
         except Exception:
-            charts = self.yt.get_charts()
+            charts = yt.get_charts()
 
-        # Collect chart playlists
         playlists_raw = charts.get("videos", []) + charts.get("genres", [])
         for p in playlists_raw:
-            pid = p.get("playlistId")
-            if pid:
-                thumbs = p.get("thumbnails", [])
-                thumb_url = thumbs[-1]["url"] if thumbs else ""
-                chart_playlists.append(
-                    Playlist(
-                        id=pid,
-                        title=p.get("title", "Chart Playlist"),
-                        author="YouTube Charts",
-                        track_count="Chart",
-                        thumbnail=thumb_url,
-                        raw=p,
-                    )
-                )
+            pl = _parse_playlist(p, default_author="YouTube Charts", default_count="Chart")
+            if pl is not None:
+                chart_playlists.append(pl)
 
-        top_tracks = self.get_trending_songs(limit=50)
+        top_tracks = self.get_trending_songs(limit=50) if include_tracks else []
         return top_tracks, chart_playlists
 
     def get_mood_categories(self) -> Dict[str, List[Category]]:
-        """
-        Fetch mood and genre categories with their exploration tokens.
-        """
+        """Fetch mood and genre categories with their exploration tokens."""
         categories: Dict[str, List[Category]] = {}
-        raw = self.yt.get_mood_categories()
+        raw = self._client().get_mood_categories()
 
         for group_name, items in raw.items():
             cat_list: List[Category] = []
@@ -365,211 +635,264 @@ class YTMusicAPI:
         return categories
 
     def get_mood_playlists(self, params: str) -> List[Playlist]:
-        """
-        Fetch curated playlists for a specific mood/genre params token.
-        """
+        """Fetch curated playlists for a specific mood/genre params token."""
         playlists: List[Playlist] = []
-        raw_list = self.yt.get_mood_playlists(params)
-
-        for p in raw_list:
-            pid = p.get("playlistId")
-            if pid:
-                thumbs = p.get("thumbnails", [])
-                thumb_url = thumbs[-1]["url"] if thumbs else ""
-                playlists.append(
-                    Playlist(
-                        id=pid,
-                        title=p.get("title", "Playlist"),
-                        author=p.get("author", "Curated"),
-                        track_count=p.get("itemCount", ""),
-                        description=p.get("description", ""),
-                        thumbnail=thumb_url,
-                        raw=p,
-                    )
-                )
-
+        for p in self._client().get_mood_playlists(params):
+            pl = _parse_playlist(p, default_author="Curated")
+            if pl is not None:
+                playlists.append(pl)
         return playlists
 
     def get_playlist(self, playlist_id: str, limit: int = 100) -> Tuple[Playlist, List[Track]]:
-        """
-        Fetch playlist metadata and its track list.
-        """
-        # Handle VL prefix if present
-        clean_id = playlist_id
-        if clean_id.startswith("VL"):
-            clean_id = clean_id[2:]
-
-        data = self.yt.get_playlist(clean_id, limit=limit)
+        """Fetch playlist metadata and its track list."""
+        clean_id = playlist_id[2:] if playlist_id.startswith("VL") else playlist_id
+        data = self._client().get_playlist(clean_id, limit=limit)
 
         author_raw = data.get("author")
         author_name = "YouTube Music"
         if isinstance(author_raw, dict):
-            author_name = author_raw.get("name", "YouTube Music")
-        elif isinstance(author_raw, str):
+            author_name = str(author_raw.get("name") or "YouTube Music")
+        elif isinstance(author_raw, str) and author_raw:
             author_name = author_raw
 
-        thumbs = data.get("thumbnails", [])
-        thumb_url = thumbs[-1]["url"] if thumbs else ""
-
         playlist = Playlist(
-            id=data.get("id") or clean_id,
-            title=data.get("title", "Playlist"),
+            id=str(data.get("id") or clean_id),
+            title=str(data.get("title") or "Playlist"),
             author=author_name,
             track_count=str(data.get("trackCount") or len(data.get("tracks", []))),
-            description=data.get("description", ""),
-            thumbnail=thumb_url,
+            description=str(data.get("description") or ""),
+            thumbnail=_extract_thumbnail_url(data),
             raw=data,
         )
 
         tracks: List[Track] = []
         for t in data.get("tracks", []):
-            vid = t.get("videoId")
-            if not vid:
-                continue
-
-            dur_str, dur_sec = parse_duration(t.get("duration") or t.get("duration_seconds"))
-            artists_str = extract_artists_str(t.get("artists"))
-
-            album_name = ""
-            album_raw = t.get("album")
-            if isinstance(album_raw, dict):
-                album_name = album_raw.get("name", "")
-            elif isinstance(album_raw, str):
-                album_name = album_raw
-
-            t_thumbs = t.get("thumbnails", [])
-            t_thumb_url = t_thumbs[-1]["url"] if t_thumbs else ""
-
-            tracks.append(
-                Track(
-                    id=vid,
-                    title=t.get("title", "Unknown Track"),
-                    artist=artists_str,
-                    album=album_name,
-                    duration=dur_str,
-                    duration_seconds=dur_sec,
-                    thumbnail=t_thumb_url,
-                    raw=t,
-                )
-            )
+            tr = _parse_track(t)
+            if tr is not None:
+                tracks.append(tr)
 
         return playlist, tracks
 
     def search_songs(self, query: str, limit: int = 30) -> List[Track]:
-        """
-        Search for songs matching query.
-        """
+        """Search for songs matching query."""
+        results = self._client().search(query, filter="songs", limit=limit)
         tracks: List[Track] = []
-        results = self.yt.search(query, filter="songs", limit=limit)
-
         for s in results:
-            vid = s.get("videoId")
-            if not vid:
-                continue
-
-            dur_str, dur_sec = parse_duration(s.get("duration"))
-            artists_str = extract_artists_str(s.get("artists"))
-
-            album_name = ""
-            album_raw = s.get("album")
-            if isinstance(album_raw, dict):
-                album_name = album_raw.get("name", "")
-            elif isinstance(album_raw, str):
-                album_name = album_raw
-
-            thumbs = s.get("thumbnails", [])
-            thumb_url = thumbs[-1]["url"] if thumbs else ""
-
-            tracks.append(
-                Track(
-                    id=vid,
-                    title=s.get("title", "Unknown Track"),
-                    artist=artists_str,
-                    album=album_name,
-                    duration=dur_str,
-                    duration_seconds=dur_sec,
-                    thumbnail=thumb_url,
-                    raw=s,
-                )
-            )
-
+            tr = _parse_track(s)
+            if tr is not None:
+                tracks.append(tr)
         return tracks
 
     def search_playlists(self, query: str, limit: int = 20) -> List[Playlist]:
-        """
-        Search for public playlists matching query.
-        """
+        """Search for public playlists matching query."""
+        results = self._client().search(query, filter="playlists", limit=limit)
         playlists: List[Playlist] = []
-        results = self.yt.search(query, filter="playlists", limit=limit)
-
         for p in results:
-            pid = p.get("browseId") or p.get("playlistId")
-            if not pid:
+            pl = _parse_playlist(p, default_author="Community")
+            if pl is not None:
+                playlists.append(pl)
+        return playlists
+
+    def search_albums(self, query: str, limit: int = 20) -> List[Album]:
+        """Search for albums matching query."""
+        results = self._client().search(query, filter="albums", limit=limit)
+        albums: List[Album] = []
+        for a in results:
+            bid = a.get("browseId") or a.get("playlistId")
+            if not bid:
                 continue
+            albums.append(
+                Album(
+                    id=str(bid),
+                    title=str(a.get("title") or "Album"),
+                    artist=extract_artists_str(a.get("artists")),
+                    year=str(a.get("year") or ""),
+                    thumbnail=_extract_thumbnail_url(a),
+                    raw=a,
+                )
+            )
+        return albums
 
-            author_raw = p.get("author")
-            author_name = "Community"
-            if isinstance(author_raw, dict):
-                author_name = author_raw.get("name", "Community")
-            elif isinstance(author_raw, str):
-                author_name = author_raw
+    def search_artists(self, query: str, limit: int = 20) -> List[Artist]:
+        """Search for artists matching query."""
+        results = self._client().search(query, filter="artists", limit=limit)
+        artists: List[Artist] = []
+        for a in results:
+            cid = a.get("browseId") or a.get("channelId")
+            if not cid:
+                continue
+            name = str(a.get("artist") or a.get("title") or a.get("name") or "Unknown Artist")
+            artists.append(
+                Artist(
+                    id=str(cid),
+                    name=name,
+                    subscribers=str(a.get("subscribers") or ""),
+                    thumbnail=_extract_thumbnail_url(a),
+                    raw=a,
+                )
+            )
+        return artists
 
-            thumbs = p.get("thumbnails", [])
-            thumb_url = thumbs[-1]["url"] if thumbs else ""
+    def get_album(self, browse_id: str) -> Tuple[Album, List[Track]]:
+        """Fetch album metadata and tracks."""
+        data = self._client().get_album(browse_id)
+        album_title = str(data.get("title") or "Album")
+        artist_name = extract_artists_str(data.get("artists"))
+        thumb = _extract_thumbnail_url(data)
+        year = str(data.get("year") or "")
+        tracks: List[Track] = []
+        for item in data.get("tracks", []):
+            tr = _parse_track(item)
+            if tr is not None:
+                if not tr.album:
+                    tr.album = album_title
+                if not tr.album_id:
+                    tr.album_id = browse_id
+                if not tr.thumbnail:
+                    tr.thumbnail = thumb
+                tracks.append(tr)
+        album = Album(
+            id=browse_id,
+            title=album_title,
+            artist=artist_name,
+            year=year,
+            track_count=str(data.get("trackCount") or len(tracks)),
+            thumbnail=thumb,
+            raw=data,
+        )
+        return album, tracks
 
-            playlists.append(
-                Playlist(
-                    id=pid,
-                    title=p.get("title", "Playlist"),
-                    author=author_name,
-                    track_count=str(p.get("itemCount", "")),
-                    description=p.get("description", ""),
-                    thumbnail=thumb_url,
-                    raw=p,
+    def get_artist(self, channel_id: str) -> Tuple[Artist, List[Track], List[Album]]:
+        """Fetch artist profile, top songs, and albums."""
+        data = self._client().get_artist(channel_id)
+        name = str(data.get("name") or "Artist")
+        thumb = _extract_thumbnail_url(data)
+        artist = Artist(
+            id=channel_id,
+            name=name,
+            subscribers=str(data.get("subscribers") or ""),
+            thumbnail=thumb,
+            raw=data,
+        )
+
+        songs: List[Track] = []
+        songs_sec = data.get("songs") or {}
+        for item in songs_sec.get("results", []):
+            tr = _parse_track(item)
+            if tr is not None:
+                if not tr.artist_id:
+                    tr.artist_id = channel_id
+                songs.append(tr)
+
+        albums: List[Album] = []
+        for key in ("albums", "singles"):
+            sec = data.get(key) or {}
+            for a in sec.get("results", []):
+                bid = a.get("browseId")
+                if not bid:
+                    continue
+                albums.append(
+                    Album(
+                        id=str(bid),
+                        title=str(a.get("title") or "Release"),
+                        artist=name,
+                        year=str(a.get("year") or ""),
+                        thumbnail=_extract_thumbnail_url(a),
+                        raw=a,
+                    )
+                )
+        return artist, songs, albums
+
+    def get_ytm_lyrics(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch timed or plain lyrics directly from YouTube Music."""
+        try:
+            wp = self._client().get_watch_playlist(videoId=video_id, limit=5)
+            lyrics_id = wp.get("lyrics")
+            if not lyrics_id:
+                return None
+            return self._client().get_lyrics(str(lyrics_id), timestamps=True)
+        except Exception:
+            return None
+
+    def get_explore_sections(self) -> Dict[str, Any]:
+        """Fetch Explore data: new releases, trending, moods & genres."""
+        yt = self._client()
+        explore = yt.get_explore()
+
+        new_releases: List[Album] = []
+        for item in explore.get("new_releases", []):
+            bid = item.get("browseId")
+            if not bid:
+                continue
+            new_releases.append(
+                Album(
+                    id=str(bid),
+                    title=str(item.get("title") or "Release"),
+                    artist=extract_artists_str(item.get("artists")),
+                    year=str(item.get("type") or "Release"),
+                    thumbnail=_extract_thumbnail_url(item),
+                    raw=item,
                 )
             )
 
-        return playlists
+        trending: List[Track] = []
+        seen: set[str] = set()
+        tr_raw = explore.get("trending", {})
+        items = tr_raw.get("items", []) if isinstance(tr_raw, dict) else tr_raw
+        if isinstance(items, list):
+            for item in items:
+                tr = _parse_track(item)
+                if tr and tr.id not in seen:
+                    seen.add(tr.id)
+                    trending.append(tr)
 
-    def get_radio(self, video_id: str, limit: int = 25) -> List[Track]:
-        """
-        Fetch algorithmic recommendations / watch playlist based on a track's video_id.
-        """
-        tracks: List[Track] = []
+        moods: List[Category] = []
+        for m in explore.get("moods_and_genres", []):
+            title = str(m.get("title") or "")
+            params = str(m.get("params") or "")
+            if title and params:
+                moods.append(Category(title=title, params=params, category_type="Mood & Genre"))
+
+        if not moods:
+            try:
+                cats = self.get_mood_categories()
+                for group_list in cats.values():
+                    moods.extend(group_list)
+            except Exception:
+                pass
+
+        return {
+            "new_releases": new_releases,
+            "trending": trending,
+            "moods": moods,
+        }
+
+    def get_radio(
+        self,
+        video_id: str,
+        limit: int = 25,
+        existing: Optional[List[Track]] = None,
+        prefer_videos: bool = False,
+    ) -> List[Track]:
+        """Fetch watch playlist & run recording-deduped artist-capped station filter."""
+        from recommendations import extend_station
+
         try:
-            wp = self.yt.get_watch_playlist(videoId=video_id, limit=limit)
+            wp = self._client().get_watch_playlist(videoId=video_id, limit=max(limit + 10, 25))
         except Exception:
             return []
 
+        raw_tracks: List[Track] = []
         for t in wp.get("tracks", []):
-            vid = t.get("videoId")
-            if not vid:
-                continue
+            tr = _parse_track(t)
+            if tr is not None:
+                raw_tracks.append(tr)
 
-            dur_str, dur_sec = parse_duration(t.get("length") or t.get("duration"))
-            artists_str = extract_artists_str(t.get("artists"))
-
-            album_name = ""
-            album_raw = t.get("album")
-            if isinstance(album_raw, dict):
-                album_name = album_raw.get("name", "")
-            elif isinstance(album_raw, str):
-                album_name = album_raw
-
-            thumbs = t.get("thumbnail", [])
-            thumb_url = thumbs[-1]["url"] if thumbs else ""
-
-            tracks.append(
-                Track(
-                    id=vid,
-                    title=t.get("title", "Unknown Track"),
-                    artist=artists_str,
-                    album=album_name,
-                    duration=dur_str,
-                    duration_seconds=dur_sec,
-                    thumbnail=thumb_url,
-                    raw=t,
-                )
-            )
-
-        return tracks[:limit] if limit else tracks
+        target_limit = limit if limit else len(raw_tracks)
+        filtered = extend_station(
+            existing=existing or [],
+            candidates=raw_tracks,
+            limit=target_limit,
+            prefer_videos=prefer_videos,
+        )
+        return filtered if filtered else raw_tracks[:target_limit]

@@ -8,7 +8,7 @@ restyled live without ever touching a stylesheet on disk.
 """
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -50,7 +50,8 @@ class OmarchyThemeManager:
         self.state_dir = Path.home() / ".local/state/omarchy/current/theme"
         self.colors_toml = self.state_dir / "colors.toml"
         self._last_mtime: float = 0.0
-        self.current_theme: ThemeColors = self.load_theme()
+        self.base_theme: ThemeColors = self.load_theme()
+        self.current_theme: ThemeColors = self.base_theme
 
     def get_theme_name(self) -> str:
         """Fetch the human-readable current Omarchy theme name."""
@@ -138,9 +139,23 @@ class OmarchyThemeManager:
     def reload(self) -> Optional[ThemeColors]:
         """Reload and return the theme if it changed, otherwise None."""
         if self.has_theme_changed():
-            self.current_theme = self.load_theme()
+            self.base_theme = self.load_theme()
+            self.current_theme = self.base_theme
             return self.current_theme
         return None
+
+    def apply_artwork_tint(self, accent: Optional[str], secondary: Optional[str] = None) -> ThemeColors:
+        """Return a copy of the base Omarchy theme tinted with album-art accents."""
+        if not accent:
+            self.current_theme = self.base_theme
+            return self.current_theme
+        self.current_theme = replace(
+            self.base_theme,
+            accent=accent,
+            primary=accent,
+            secondary=secondary or self.base_theme.secondary,
+        )
+        return self.current_theme
 
     @staticmethod
     def build_textual_theme(colors: ThemeColors, version: int = 0) -> Theme:

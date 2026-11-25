@@ -4,7 +4,8 @@ spectrum.py - Real-time audio spectrum source for ame.
 Spawns ``cava`` with a private raw-output config, reads its ASCII band values
 from stdout on a background thread and forwards them to a callback. cava taps
 the PipeWire/PulseAudio monitor, so it visualizes playback without touching
-mpv's audio path.
+mpv's audio path. Start/stop are idempotent so cava idles with 0 CPU whenever
+audio is paused/stopped or the visualizer is hidden.
 """
 
 import os
@@ -49,6 +50,7 @@ class CavaSpectrum:
         self.framerate = framerate
         self.on_update = on_update
         self.proc: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._config_path: Optional[str] = None
@@ -57,38 +59,56 @@ class CavaSpectrum:
     def available() -> bool:
         return shutil.which("cava") is not None
 
+    @property
+    def running(self) -> bool:
+        return self._running and self.proc is not None and self.proc.poll() is None
+
     def start(self) -> bool:
-        """Launch cava. Returns False when it is unavailable or fails to start."""
-        if not self.available():
-            return False
+        """Launch cava if not already running. Returns False when unavailable."""
+        with self._lock:
+            if self.running:
+                return True
+            if not self.available():
+                return False
 
-        self._write_config()
-        try:
-            self.proc = subprocess.Popen(
-                ["cava", "-p", self._config_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                text=True,
-                bufsize=1,
-            )
-        except Exception:
-            return False
+            self._write_config()
+            try:
+                self.proc = subprocess.Popen(
+                    ["cava", "-p", self._config_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    bufsize=1,
+                )
+            except Exception:
+                self._remove_config()
+                return False
 
-        self._running = True
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._thread.start()
-        return True
+            self._running = True
+            self._thread = threading.Thread(target=self._read_loop, daemon=True)
+            self._thread.start()
+            return True
 
     def _write_config(self) -> None:
+        self._remove_config()
         fd, path = tempfile.mkstemp(prefix="ame_cava_", suffix=".conf")
         os.close(fd)
         self._config_path = path
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(_CAVA_CONFIG.format(bars=self.bars, framerate=self.framerate))
 
+    def _remove_config(self) -> None:
+        if self._config_path and os.path.exists(self._config_path):
+            try:
+                os.remove(self._config_path)
+            except OSError:
+                pass
+        self._config_path = None
+
     def _read_loop(self) -> None:
-        stream = self.proc.stdout if self.proc else None
+        proc = self.proc
+        stream = proc.stdout if proc else None
         while self._running and stream is not None:
             try:
                 line = stream.readline()
@@ -106,27 +126,36 @@ class CavaSpectrum:
             except ValueError:
                 continue
 
-            if self.on_update:
+            if self._running and self.on_update:
                 try:
                     self.on_update(values)
                 except Exception:
                     pass
 
     def stop(self) -> None:
-        self._running = False
-        if self.proc:
+        with self._lock:
+            self._running = False
+            proc = self.proc
+            self.proc = None
+            thread = self._thread
+            self._thread = None
+
+        if proc:
             try:
-                self.proc.terminate()
-                self.proc.wait(timeout=1.0)
+                if proc.stdout:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.0)
             except Exception:
                 try:
-                    self.proc.kill()
+                    proc.kill()
                 except Exception:
                     pass
-            self.proc = None
-        if self._config_path and os.path.exists(self._config_path):
-            try:
-                os.remove(self._config_path)
-            except OSError:
-                pass
-        self._config_path = None
+
+        if thread and thread.is_alive() and threading.current_thread() is not thread:
+            thread.join(timeout=0.5)
+
+        self._remove_config()

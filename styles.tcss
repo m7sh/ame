@@ -29,22 +29,68 @@ TopBar {
 }
 
 /* ------------------------------------------------------------------ */
-/* Matrix digital-rain visualizer (top of the screen)                  */
+/* Sleek 1-row graphic equalizer (sits unobtrusively above player bar) */
 /* ------------------------------------------------------------------ */
 #spectrum {
-    height: 7;
+    height: 1;
     width: 100%;
     background: ansi_default;
-    padding: 0 1;
-    margin: 0 0 1 0;
+    padding: 0 2;
+    margin: 0;
 }
 
 /* ------------------------------------------------------------------ */
 /* Main content                                                        */
 /* ------------------------------------------------------------------ */
-#content_switcher {
+/* ------------------------------------------------------------------ */
+/* Main workspace & left navigation sidebar                            */
+/* ------------------------------------------------------------------ */
+#main_body {
     width: 100%;
     height: 1fr;
+    background: ansi_default;
+}
+
+Sidebar {
+    width: 22;
+    height: 100%;
+    background: ansi_default;
+    border-right: tall $ame-border;
+    padding: 0 1 1 0;
+    layout: vertical;
+}
+
+#sidebar_brand {
+    height: 2;
+    width: 100%;
+    padding: 0 1;
+    background: ansi_default;
+}
+
+.sidebar_section {
+    height: 1;
+    width: 100%;
+    margin: 1 0 0 0;
+    padding: 0 1;
+    color: $ame-border;
+    text-style: bold;
+    background: ansi_default;
+}
+
+.sidebar_item {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: ansi_default;
+}
+
+.sidebar_item:hover {
+    background: $ame-hover;
+}
+
+#content_switcher {
+    width: 1fr;
+    height: 100%;
     background: ansi_default;
 }
 
@@ -155,7 +201,7 @@ Tab.-active {
 }
 
 /* ------------------------------------------------------------------ */
-/* Bottom player bar                                                   */
+/* Bottom player bar (minimized mini player)                           */
 /* ------------------------------------------------------------------ */
 PlayerBar {
     dock: bottom;
@@ -163,6 +209,41 @@ PlayerBar {
     background: ansi_default;
     padding: 1 2 0 2;
     layout: vertical;
+}
+
+#player_bar_body {
+    height: 3;
+    width: 100%;
+    background: ansi_default;
+}
+
+#mini_art_box {
+    width: 6;
+    height: 3;
+    margin: 0 2 0 0;
+    background: ansi_default;
+    align: center middle;
+}
+
+#mini_art_image {
+    width: 6;
+    height: 3;
+    background: ansi_default;
+}
+
+#mini_art_placeholder {
+    width: 6;
+    height: 3;
+    content-align: center middle;
+    color: $ame-accent;
+    background: ansi_default;
+}
+
+#player_bar_main {
+    width: 1fr;
+    height: 3;
+    layout: vertical;
+    background: ansi_default;
 }
 
 #player_row {
@@ -181,9 +262,309 @@ PlayerBar {
     color: $ame-muted;
 }
 
+#player_controls_row {
+    height: 1;
+    width: 100%;
+}
+
+.mini_btn {
+    width: auto;
+    height: 1;
+    padding: 0 1 0 0;
+    background: ansi_default;
+}
+
+.mini_btn:hover {
+    background: $ame-hover;
+}
+
+#mini_btn_expand {
+    padding: 0 0 0 1;
+}
+
+#player_controls_spacer {
+    width: 1fr;
+    height: 1;
+}
+
 SeekBar {
     height: 1;
     width: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* Maximized Now Playing album window                                  */
+/* ------------------------------------------------------------------ */
+NowPlayingView {
+    width: 100%;
+    height: 100%;
+    background: ansi_default;
+}
+
+#np_root {
+    width: 100%;
+    height: 100%;
+    padding: 0 2 1 2;
+    layout: vertical;
+    background: ansi_default;
+}
+
+#np_header_row {
+    height: 1;
+    width: 100%;
+    background: ansi_default;
+}
+
+#np_header {
+    width: 1fr;
+    padding: 0;
+}
+
+#np_minimize_btn {
+    width: auto;
+    height: 1;
+    background: ansi_default;
+}
+
+#np_minimize_btn:hover {
+    background: $ame-hover;
+}
+
+#np_body {
+    width: 100%;
+    height: 1fr;
+    background: ansi_default;
+}
+
+#np_left_col {
+    width: 100%;
+    height: 100%;
+    layout: vertical;
+    background: ansi_default;
+}
+
+#np_side_panel {
+    width: 48%;
+    height: 100%;
+    padding: 0 0 0 2;
+    layout: vertical;
+    background: ansi_default;
+}
+
+#np_side_header_row {
+    height: 1;
+    width: 100%;
+    background: ansi_default;
+}
+
+#np_side_header {
+    width: 1fr;
+    padding: 0;
+}
+
+#np_side_close_btn {
+    width: auto;
+    height: 1;
+    background: ansi_default;
+}
+
+#np_side_close_btn:hover {
+    background: $ame-hover;
+}
+
+#np_lyrics_scroll, #np_queue_scroll {
+    width: 100%;
+    height: 1fr;
+    margin: 1 0 0 0;
+    background: ansi_default;
+    scrollbar-size-vertical: 0;
+    scrollbar-size-horizontal: 0;
+}
+
+.lyric_line {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+    background: ansi_default;
+}
+
+.lyric_line:hover {
+    background: $ame-hover;
+}
+
+.lyric_empty {
+    width: 100%;
+    height: auto;
+    text-align: center;
+    background: ansi_default;
+}
+
+.up_next_row {
+    width: 100%;
+    height: auto;
+    padding: 0 1;
+    text-overflow: ellipsis;
+    background: ansi_default;
+}
+
+.up_next_row:hover {
+    background: $ame-hover;
+}
+
+#np_links_row {
+    width: 100%;
+    height: 1;
+    align: center middle;
+    background: ansi_default;
+}
+
+#np_subtitle {
+    width: 100%;
+    height: 1;
+    content-align: center middle;
+    text-align: center;
+    text-overflow: ellipsis;
+}
+
+.np_link_btn {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    background: ansi_default;
+}
+
+.np_link_btn:hover {
+    background: $ame-hover;
+}
+
+#np_art_stage {
+    width: 100%;
+    height: 1fr;
+    align: center middle;
+    background: ansi_default;
+    margin: 1 0;
+}
+
+#np_art_box {
+    width: 24;
+    height: 12;
+    align: center middle;
+    background: ansi_default;
+}
+
+#np_art_image {
+    width: 100%;
+    height: 100%;
+    background: ansi_default;
+}
+
+#np_art_placeholder {
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    text-align: center;
+    border: round $ame-border;
+    background: ansi_default;
+}
+
+#np_footer {
+    width: 100%;
+    height: auto;
+    layout: vertical;
+    background: ansi_default;
+}
+
+#np_title {
+    width: 100%;
+    height: 1;
+    content-align: center middle;
+    text-align: center;
+    text-overflow: ellipsis;
+}
+
+#np_subtitle {
+    width: 100%;
+    height: 1;
+    content-align: center middle;
+    text-align: center;
+    text-overflow: ellipsis;
+}
+
+#np_nerd_stats {
+    width: 100%;
+    height: 1;
+    content-align: center middle;
+    text-align: center;
+    text-overflow: ellipsis;
+    margin: 0 0 1 0;
+}
+
+#np_time_row {
+    width: 100%;
+    height: 1;
+}
+
+#np_elapsed {
+    width: auto;
+}
+
+#np_status_center {
+    width: 1fr;
+    content-align: center middle;
+    text-align: center;
+}
+
+#np_total {
+    width: auto;
+}
+
+#np_seek {
+    width: 100%;
+    height: 1;
+}
+
+#np_controls, #np_controls_secondary {
+    width: 100%;
+    height: 1;
+    align: center middle;
+    margin: 1 0 0 0;
+}
+
+.np_btn {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    background: ansi_default;
+}
+
+.np_btn:hover {
+    background: $ame-hover;
+}
+
+#np_up_next {
+    width: 100%;
+    height: 1;
+    content-align: center middle;
+    text-align: center;
+    text-overflow: ellipsis;
+    margin: 1 0 0 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Listening stats / Replay view                                       */
+/* ------------------------------------------------------------------ */
+#stats_overview {
+    width: 100%;
+    height: 1;
+    margin: 1 0 0 0;
+    background: ansi_default;
+}
+
+#stats_histogram {
+    width: 100%;
+    height: 1;
+    margin: 0 0 1 0;
+    background: ansi_default;
 }
 
 /* ------------------------------------------------------------------ */
@@ -199,6 +580,8 @@ HelpScreen {
     max-width: 96%;
     height: auto;
     max-height: 90%;
+    overflow-y: auto;
+    scrollbar-size-vertical: 0;
     background: ansi_default;
     border: none;
     padding: 1 3;
