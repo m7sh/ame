@@ -42,17 +42,17 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 ## Features
 
 - Zero authentication / guest mode (`YTMusic()` with no credentials).
-- Personalized recommendation & mix engine (`recommendations.py`): recency + play-count + favourites taste scoring, audio/video recording deduplication, per-artist diversity caps, time-of-day mood curations, and similar-artist discovery.
+- **Personalized recommendation & category queue engine** (`recommendations.py`): skip-aware completion weighting + recency + play-count + favourites taste scoring, language/style category inference so playing any song automatically queues matching-category tracks, audio/video recording deduplication, per-artist diversity caps, and similar-artist discovery.
 - **Explore** (`e`) with live new releases (full album drill-down), trending tracks, and moods & genres playlists.
 - Persistent **Library** (`F`) & **Settings** (`,`) — starred songs, local recently played history (`~/.local/share/ame/recent.json`), top artists, and persistent playback preferences (`~/.local/share/ame/settings.json`).
 - Infinite radio plus continuous autoplay when the queue runs dry.
 - Full queue control: append, play-all, play-next (`i`), reorder (`J`/`K`), shuffle, remove and clear.
 - Asynchronous discovery, coalesced stream resolution, 1 MiB pre-playback probing, and mid-playback refusal recovery.
-- Bounded 512 MiB on-disk LRU audio cache (`~/.cache/ame/audio`) with chunked prefetching.
-- Headless `mpv` playback over JSON IPC with native gapless queue arming, dual-player equal-power crossfade (`x`), loop modes (`l`), playback speed (`C`), sleep timer (`Z`), and YouTube `loudnessDb` normalization (`N`).
-- Maximized Now Playing album window (`w`/`m`) with Sixel/TGP/Halfcell cover art, split synced lyrics **open by default** (`L` via LRCLIB / YouTube Music), interactive Up Next side panel (`O`), dynamic album-art accent tinting (`D`), two-row transport controls, and NerdStats.
-- Search songs, albums, artists & playlists with album/artist drill-down (`g`/`G`).
-- Local-only Replay & listening stats (`Y`) with hourly activity bars, plus MPRIS2 (`playerctl`/Waybar) and Discord Rich Presence.
+- **Bounded 512 MiB on-disk LRU audio cache** (`~/.cache/ame/audio`) with chunked prefetching.
+- **Headless `mpv` playback** over JSON IPC with native gapless queue arming, dual-player equal-power crossfade (`x`), loop modes (`l`), playback speed (`C`), **7-band equalizer with 16 presets & headroom preamp** (`E`), **skip silence** (`M`), sleep timer (`Z`), and YouTube `loudnessDb` normalization (`N`).
+- **Maximized Now Playing album window** (`w`/`m`) with Sixel/TGP/Halfcell cover art, split **word/syllable-synced lyrics** open by default (`L` via SimpMusic / BetterLyrics / LyricsPlus / lrc.red / LRCLIB / YouTube Music) with live timing offset (`<`/`>`) and instrumental break markers, interactive Up Next side panel (`O`), dynamic album-art accent tinting (`D`), **Song Info & Credits modal** (`I`), two-row transport controls, and NerdStats.
+- **Search & Spotify Playlist Import** (`/` / `s`) — search songs, albums, artists & playlists with album/artist drill-down (`g`/`G`), or paste a public Spotify playlist URL/URI to import and match tracks directly on YouTube Music.
+- **Local-only Replay & listening stats** (`Y`) with hourly activity bars, plus MPRIS2 (`playerctl`/Waybar), Discord Rich Presence, and optional **ListenBrainz scrobbling**.
 - Real-time spectrum visualizer via `cava` (optional).
 
 ---
@@ -69,7 +69,10 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `x` | cycle crossfade (`off` / `3s` / `6s`) |
 | `N` | toggle loudness normalization |
 | `C` | cycle playback speed (`1×` / `1.25×` / `1.5×` / `2×` / `0.75×`) |
+| `E` | cycle 7-band equalizer preset (16 presets) |
+| `M` | toggle skip silence |
 | `Z` | cycle sleep timer (`off` / `15m` / `30m` / `45m` / `60m`) |
+| `<` / `>` | adjust per-track lyrics timing offset (`−0.25s` / `+0.25s`) |
 | `j` / `k` | move down / up |
 | `J` / `K` | reorder queue item down / up |
 | `[` / `]` | switch sub-tab |
@@ -79,6 +82,7 @@ a letterspaced wordmark, bracketed chips and `▸─ section ──` dividers.
 | `P` | play every track in the current view |
 | `R` | start a song radio from the highlighted track |
 | `g` / `G` | open artist / album page for highlighted or playing track |
+| `I` | open Song Info & Credits modal |
 | `f` | add / remove the highlighted (or playing) track from favourites |
 | `F` | open Library (liked songs, recently played, top artists) |
 | `d` | remove the highlighted track from the queue or favourites |
@@ -198,12 +202,15 @@ ame/
 ├── artwork.py          # Cover art cache, Sixel/Halfcell helpers & accent extraction
 ├── stream_resolver.py  # InnerTube client walk, 1 MiB probing & yt-dlp failsafe
 ├── audio_cache.py      # Bounded 512 MiB LRU disk cache with 2 MiB chunked downloads
-├── player.py           # Headless mpv IPC daemons: gapless, crossfade, recovery, loudness
+├── equalizer.py        # 7-band EQ presets, headroom preamp & mpv lavfi filter chain
+├── player.py           # Headless mpv IPC daemons: gapless, crossfade, recovery, loudness, EQ
 ├── favourites.py       # JSON-backed persistent favourites store
 ├── settings.py         # Persistent app preferences & local recently played history
-├── lyrics.py           # LRCLIB + YTMusic synced LRC lyrics manager
+├── lyrics.py           # Multi-provider word/line-synced lyrics (SimpMusic, BetterLyrics, LyricsPlus, lrc.red, LRCLIB, YTM)
+├── song_info.py        # YouTube watch telemetry & YTMusic track credits (MPTC*)
+├── spotify_import.py   # Public Spotify playlist scraper & YouTube Music track matcher
 ├── stats.py            # Monthly listening Replay & hourly activity stats store
-├── integrations.py     # MPRIS2 & Discord Rich Presence controllers
+├── integrations.py     # MPRIS2, Discord Rich Presence & ListenBrainz scrobbling
 ├── mpris_bridge.py     # System python3 D-Bus MPRIS2 service bridge
 ├── spectrum.py         # cava subprocess bridge for the spectrum visualizer
 ├── theme.py            # Omarchy palette detection -> native Textual Theme

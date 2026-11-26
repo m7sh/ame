@@ -29,7 +29,9 @@ from artwork import (
     image_backend_name,
     square_cell_dimensions,
 )
-from lyrics import LyricLine, LyricsResult, active_lyric_index
+from equalizer import get_eq_preset
+from lyrics import LyricLine, LyricsResult, active_lyric_index, active_word_index
+from song_info import SongInfo
 from theme import ThemeColors
 
 
@@ -142,24 +144,33 @@ class TopBar(Static):
         width = self.size.width
         text = Text(no_wrap=True, overflow="crop")
         self._tab_spans = []
+        active_span: Optional[Tuple[int, int]] = None
 
-        text.append("  ")
+        compact = 0 < width < 100
+        tab_gap = " " if compact else "  "
+
+        text.append(" " if compact else "  ")
         text.append("A M E", style=f"bold {t.accent}")
-        text.append("   ")
+        text.append("  " if compact else "   ")
 
         for index, (key, label, view_id) in enumerate(VIEWS):
             if index:
-                text.append("  ")
+                text.append(tab_gap)
             start = text.cell_len
             active = view_id == self.active_view_id
-            rest_style = t.foreground if active else t.muted
+            if active:
+                text.append("▸", style=f"bold {t.accent}")
+            rest_style = f"bold {t.foreground}" if active else t.muted
             if label.lower().startswith(key.lower()):
                 text.append(key[0], style=f"bold {t.accent}")
                 text.append(label[1:], style=rest_style)
             else:
                 text.append(key, style=f"bold {t.accent}")
                 text.append(f" {label}", style=rest_style)
-            self._tab_spans.append((start, text.cell_len, view_id))
+            end = text.cell_len
+            self._tab_spans.append((start, end, view_id))
+            if active:
+                active_span = (start, end)
 
         if self.status:
             frame = self.SPINNER_FRAMES[self._spinner_idx % len(self.SPINNER_FRAMES)]
@@ -210,6 +221,19 @@ class TopBar(Static):
             right = _build_right(include_theme=False, include_help=True, include_meter=True)
             text.append("  ")
             text.append_text(right)
+
+        # Row 2: full-width hairline divider with active tab highlight
+        rule_w = max(width, text.cell_len, 24)
+        text.append("\n")
+        if active_span and active_span[1] <= rule_w:
+            a_start, a_end = active_span
+            if a_start > 0:
+                text.append("─" * a_start, style=t.border)
+            text.append("━" * (a_end - a_start), style=f"bold {t.accent}")
+            if a_end < rule_w:
+                text.append("─" * (rule_w - a_end), style=t.border)
+        else:
+            text.append("─" * rule_w, style=t.border)
 
         return text
 
@@ -414,7 +438,7 @@ class SeekBar(Static):
             return text
 
         if self.buffering:
-            text.append("─" * width, style=t.border)
+            text.append("┄" * width, style=t.warning)
             return text
 
         if self.total <= 0:
@@ -437,8 +461,9 @@ class SeekBar(Static):
         empty = width - 1 - filled
 
         if filled:
-            text.append("━" * filled, style=t.primary)
-        text.append("●", style=t.accent)
+            fill_color = _lerp_hex(t.primary, t.accent, ratio)
+            text.append("━" * filled, style=fill_color)
+        text.append("◉", style=f"bold {t.accent}")
         if empty:
             text.append("─" * empty, style=t.border)
         return text
@@ -504,7 +529,7 @@ class SidebarItem(Static):
 
     def render_item(self, active: bool, t: ThemeColors) -> None:
         txt = Text(no_wrap=True, overflow="crop")
-        txt.append("▸ " if active else "  ", style=f"bold {t.accent}" if active else t.border)
+        txt.append("▌ " if active else "  ", style=f"bold {t.accent}" if active else t.border)
         txt.append(f"{self.key_hint} ", style=f"bold {t.accent}")
         txt.append(self.item_label, style=f"bold {t.foreground}" if active else t.muted)
         self.update(txt)
@@ -547,18 +572,63 @@ class Sidebar(Widget):
         ),
     ]
 
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._now_title: str = ""
+        self._eq_label: str = "Flat"
+        self._xfade_s: int = 0
+        self._skip_silence: bool = False
+
     def compose(self) -> ComposeResult:
         yield Static("", id="sidebar_brand")
         for sec_title, items in self.SECTIONS:
-            yield Static(sec_title, classes="sidebar_section")
+            yield Static(f"▸ {sec_title}", classes="sidebar_section")
             for key_hint, label, target in items:
                 yield SidebarItem(key_hint, label, target, classes="sidebar_item")
+        yield Static("", id="sidebar_spacer")
+        yield Static("", id="sidebar_footer")
 
     def on_mount(self) -> None:
         self.refresh_theme()
 
     def watch_active_view_id(self, _value: str) -> None:
         self.refresh_theme()
+
+    def set_playback_meta(
+        self,
+        track_title: str = "",
+        eq_preset: str = "flat",
+        crossfade_s: int = 0,
+        skip_silence: bool = False,
+    ) -> None:
+        self._now_title = track_title
+        self._eq_label = get_eq_preset(eq_preset).label
+        self._xfade_s = int(crossfade_s or 0)
+        self._skip_silence = bool(skip_silence)
+        self._render_footer()
+
+    def _render_footer(self) -> None:
+        t = _palette(self)
+        try:
+            ftr = self.query_one("#sidebar_footer", Static)
+        except Exception:
+            return
+        txt = Text(no_wrap=True, overflow="ellipsis")
+        if self._now_title:
+            txt.append("♫ ", style=f"bold {t.accent}")
+            txt.append(self._now_title, style=t.foreground)
+        else:
+            txt.append("guest mode", style=t.muted)
+        dsp_bits: List[str] = []
+        if self._eq_label != "Flat":
+            dsp_bits.append(f"EQ:{self._eq_label}")
+        if self._xfade_s > 0:
+            dsp_bits.append(f"XF:{self._xfade_s}s")
+        if self._skip_silence:
+            dsp_bits.append("SKIP")
+        if dsp_bits:
+            txt.append("\n" + " · ".join(dsp_bits), style=t.secondary)
+        ftr.update(txt)
 
     def refresh_theme(self) -> None:
         t = _palette(self)
@@ -572,6 +642,7 @@ class Sidebar(Widget):
                     hdr.styles.color = t.border
             for item in self.query(SidebarItem):
                 item.render_item(item.target == self.active_view_id, t)
+            self._render_footer()
         except Exception:
             pass
 
@@ -671,6 +742,8 @@ class PlayerBar(Widget):
         self._crossfade_seconds: int = 0
         self._loudness_norm: bool = True
         self._speed: float = 1.0
+        self._eq_preset: str = "flat"
+        self._skip_silence: bool = False
         self._sleep_remaining_s: int = 0
         self._is_fav: bool = False
 
@@ -764,6 +837,14 @@ class PlayerBar(Widget):
             out.append("  ")
             out.append_text(_chip_text(f"{self._speed:.2g}×", t.primary, t.primary))
 
+        if self._eq_preset != "flat":
+            out.append("  ")
+            out.append_text(_chip_text(f"EQ {get_eq_preset(self._eq_preset).label}", t.secondary, t.secondary))
+
+        if self._skip_silence:
+            out.append("  ")
+            out.append_text(_chip_text("SKIP", t.success, t.success))
+
         if self._sleep_remaining_s > 0:
             mins, secs = divmod(self._sleep_remaining_s, 60)
             out.append("  ")
@@ -838,6 +919,14 @@ class PlayerBar(Widget):
         self._speed = float(speed)
         self._render_meta()
 
+    def set_eq_preset(self, preset_id: str) -> None:
+        self._eq_preset = preset_id or "flat"
+        self._render_meta()
+
+    def set_skip_silence(self, enabled: bool) -> None:
+        self._skip_silence = bool(enabled)
+        self._render_meta()
+
     def set_sleep_remaining(self, seconds: int) -> None:
         self._sleep_remaining_s = max(0, int(seconds))
         self._render_meta()
@@ -909,6 +998,8 @@ class NowPlayingView(Widget):
         self._crossfade_seconds: int = 0
         self._loudness_norm: bool = True
         self._speed: float = 1.0
+        self._eq_preset: str = "flat"
+        self._skip_silence: bool = False
         self._sleep_remaining_s: int = 0
         self._dynamic_tint: bool = True
         self._show_nerd_stats: bool = True
@@ -923,7 +1014,9 @@ class NowPlayingView(Widget):
         self._user_side_preference: Optional[str] = "lyrics"
         self._lyrics: LyricsResult = LyricsResult()
         self._lyrics_loading: bool = False
+        self._lyrics_offset_ms: int = 0
         self._active_lyric_idx: int = -1
+        self._active_word_idx: int = -1
 
     def compose(self) -> ComposeResult:
         with Vertical(id="np_root"):
@@ -943,6 +1036,7 @@ class NowPlayingView(Widget):
                         with Horizontal(id="np_links_row"):
                             yield ControlChip("open_artist", "", id="np_artist_btn", classes="np_link_btn")
                             yield ControlChip("open_album", "", id="np_album_btn", classes="np_link_btn")
+                            yield ControlChip("song_info", "", id="np_info_btn", classes="np_link_btn")
                         yield Static("", id="np_nerd_stats")
                         with Horizontal(id="np_time_row"):
                             yield Static("00:00", id="np_elapsed")
@@ -959,6 +1053,8 @@ class NowPlayingView(Widget):
                             yield ControlChip("crossfade", "", id="np_btn_xfade", classes="np_btn")
                             yield ControlChip("loudness", "", id="np_btn_norm", classes="np_btn")
                             yield ControlChip("speed", "", id="np_btn_speed", classes="np_btn")
+                            yield ControlChip("eq", "", id="np_btn_eq", classes="np_btn")
+                            yield ControlChip("skip_silence", "", id="np_btn_skip", classes="np_btn")
                             yield ControlChip("sleep", "", id="np_btn_sleep", classes="np_btn")
                             yield ControlChip("toggle_lyrics", "", id="np_btn_lyrics", classes="np_btn")
                             yield ControlChip("toggle_queue", "", id="np_btn_queue", classes="np_btn")
@@ -1018,14 +1114,17 @@ class NowPlayingView(Widget):
                 left.styles.width = "100%"
                 side.styles.width = "100%"
                 side.styles.height = "1fr"
+                side.styles.border_left = ("none", "transparent")
             elif show_side:
                 left.styles.height = "100%"
                 left.styles.width = "52%"
                 side.styles.width = "48%"
                 side.styles.height = "100%"
+                side.styles.border_left = ("tall", _palette(self).border)
             else:
                 left.styles.height = "100%"
                 left.styles.width = "100%"
+                side.styles.border_left = ("none", "transparent")
             self.query_one("#np_lyrics_scroll", VerticalScroll).display = self._side_panel == "lyrics"
             self.query_one("#np_queue_scroll", VerticalScroll).display = self._side_panel == "queue"
         except Exception:
@@ -1103,6 +1202,7 @@ class NowPlayingView(Widget):
             links_row = self.query_one("#np_links_row", Horizontal)
             artist_btn = self.query_one("#np_artist_btn", ControlChip)
             album_btn = self.query_one("#np_album_btn", ControlChip)
+            info_btn = self.query_one("#np_info_btn", ControlChip)
             nerd_w = self.query_one("#np_nerd_stats", Static)
         except Exception:
             return
@@ -1129,13 +1229,15 @@ class NowPlayingView(Widget):
 
         has_artist = bool(self._track.artist_id)
         has_album = bool(self._track.album_id)
-        links_row.display = has_artist or has_album
+        links_row.display = True
         artist_btn.display = has_artist
         album_btn.display = has_album
+        info_btn.display = True
         if has_artist:
             artist_btn.update(_chip_text("g artist", t.primary, t.border, bold=False))
         if has_album:
             album_btn.update(_chip_text("G album", t.primary, t.border, bold=False))
+        info_btn.update(_chip_text("I info", t.secondary, t.border, bold=False))
 
         if self._show_nerd_stats:
             stats = format_nerd_stats(self._stream_info, self._quality, self._loudness_norm)
@@ -1200,6 +1302,17 @@ class NowPlayingView(Widget):
             if abs(self._speed - 1.0) >= 0.01
             else _chip_text("1×", t.muted, t.border, bold=False)
         )
+        eq_label = get_eq_preset(self._eq_preset).label
+        eq_chip = (
+            _chip_text(f"EQ {eq_label}", t.secondary, t.secondary)
+            if self._eq_preset != "flat"
+            else _chip_text("EQ flat", t.muted, t.border, bold=False)
+        )
+        skip_chip = (
+            _chip_text("SKIP", t.success, t.success)
+            if self._skip_silence
+            else _chip_text("skip", t.muted, t.border, bold=False)
+        )
         if self._sleep_remaining_s > 0:
             mins, secs = divmod(self._sleep_remaining_s, 60)
             sleep_chip = _chip_text(f"☾ {mins:02d}:{secs:02d}", t.warning, t.warning)
@@ -1231,6 +1344,8 @@ class NowPlayingView(Widget):
             self.query_one("#np_btn_xfade", ControlChip).update(xfade_chip)
             self.query_one("#np_btn_norm", ControlChip).update(norm_chip)
             self.query_one("#np_btn_speed", ControlChip).update(speed_chip)
+            self.query_one("#np_btn_eq", ControlChip).update(eq_chip)
+            self.query_one("#np_btn_skip", ControlChip).update(skip_chip)
             self.query_one("#np_btn_sleep", ControlChip).update(sleep_chip)
             self.query_one("#np_btn_lyrics", ControlChip).update(lyrics_chip)
             self.query_one("#np_btn_queue", ControlChip).update(queue_chip)
@@ -1274,7 +1389,14 @@ class NowPlayingView(Widget):
                 chips.append(("loading…", True))
             elif self._lyrics.source:
                 chips.append((self._lyrics.source, True))
-                chips.append(("synced" if self._lyrics.synced else "plain", False))
+                sync_label = (
+                    "word sync"
+                    if self._lyrics.word_synced
+                    else ("synced" if self._lyrics.synced else "plain")
+                )
+                chips.append((sync_label, False))
+                if self._lyrics_offset_ms != 0:
+                    chips.append((f"{self._lyrics_offset_ms / 1000:+.2f}s", True))
             header.set_content("lyrics", chips)
             self._rebuild_lyrics_items()
         elif self._side_panel == "queue":
@@ -1313,19 +1435,62 @@ class NowPlayingView(Widget):
         except Exception:
             return
 
+        near_style = _lerp_hex(t.muted, t.foreground, 0.72)
+        mid_style = _lerp_hex(t.muted, t.foreground, 0.32)
+        far_style = t.muted
+
         active_widget: Optional[LyricLineItem] = None
         for item in items:
             idx = item.line_index
-            txt = escape(item.lyric_line.text)
+            line = item.lyric_line
+            txt = escape(line.text)
             if not self._lyrics.synced:
                 item.update(f"[{t.foreground}]{txt}[/]")
             elif idx == self._active_lyric_idx:
-                item.update(f"[bold {t.accent}]▸ {txt}[/]")
+                if line.words:
+                    rich_line = Text()
+                    rich_line.append("▸ ", style=f"bold {t.accent}")
+                    for wi, word in enumerate(line.words):
+                        if wi:
+                            rich_line.append(" ")
+                        if wi < self._active_word_idx:
+                            style = f"bold {t.accent}"
+                        elif wi == self._active_word_idx:
+                            style = f"bold reverse {t.accent}"
+                        else:
+                            style = f"bold {t.foreground}"
+                        rich_line.append(word.text, style=style)
+                    item.update(rich_line)
+                elif line.is_gap:
+                    nxt_t = (
+                        self._lyrics.lines[idx + 1].time_ms
+                        if idx + 1 < len(self._lyrics.lines)
+                        else None
+                    )
+                    cur_ms = int(max(0.0, self._pos) * 1000) + self._lyrics_offset_ms
+                    start_ms = line.time_ms or 0
+                    if nxt_t and nxt_t > start_ms:
+                        frac = max(0.0, min(1.0, (cur_ms - start_ms) / (nxt_t - start_ms)))
+                    else:
+                        frac = 0.5
+                    filled = 1 if frac < 0.34 else (2 if frac < 0.68 else 3)
+                    dots = " ".join("◉" if d < filled else "○" for d in range(3))
+                    item.update(f"[bold {t.accent}]  {dots}[/]")
+                else:
+                    item.update(f"[bold {t.accent}]▸ {txt}[/]")
                 active_widget = item
-            elif self._active_lyric_idx >= 0 and abs(idx - self._active_lyric_idx) <= 1:
-                item.update(f"[{t.foreground}]  {txt}[/]")
+            elif self._active_lyric_idx >= 0:
+                dist = abs(idx - self._active_lyric_idx)
+                if line.is_gap:
+                    item.update(f"[{far_style}]  ···[/]")
+                elif dist == 1:
+                    item.update(f"[{near_style}]  {txt}[/]")
+                elif dist == 2:
+                    item.update(f"[{mid_style}]  {txt}[/]")
+                else:
+                    item.update(f"[{far_style}]  {txt}[/]")
             else:
-                item.update(f"[{t.muted}]  {txt}[/]")
+                item.update(f"[{far_style}]  {txt}[/]")
 
         if scroll_to_active and active_widget is not None:
             try:
@@ -1347,9 +1512,10 @@ class NowPlayingView(Widget):
         widgets: List[Widget] = []
         for idx, tr in enumerate(self._queue):
             row = UpNextItem(idx, tr, classes="up_next_row")
+            prefix = f"[bold {t.accent}]▸ NEXT[/]" if idx == 0 else f"[{t.accent}]{idx + 1:>2}.[/]"
             row.update(
-                f"[{t.accent}]{idx + 1:>2}.[/] "
-                f"[{t.foreground}]{escape(tr.title)}[/] "
+                f"{prefix} "
+                f"[{'bold ' if idx == 0 else ''}{t.foreground}]{escape(tr.title)}[/] "
                 f"[{t.border}]—[/] [{t.secondary}]{escape(tr.artist)}[/] "
                 f"[{t.muted}]({tr.display_duration})[/]"
             )
@@ -1378,7 +1544,9 @@ class NowPlayingView(Widget):
             self._quality = ""
             self._stream_info = None
             self._lyrics = LyricsResult()
+            self._lyrics_offset_ms = 0
             self._active_lyric_idx = -1
+            self._active_word_idx = -1
             self.set_artwork(None)
         elif stream_info is not None:
             self._stream_info = stream_info
@@ -1387,10 +1555,24 @@ class NowPlayingView(Widget):
         if self._side_panel == "lyrics":
             self._render_side_panel()
 
-    def set_lyrics(self, lyrics: LyricsResult, loading: bool = False) -> None:
+    def set_lyrics(self, lyrics: LyricsResult, loading: bool = False, offset_ms: int = 0) -> None:
         self._lyrics = lyrics
         self._lyrics_loading = loading
-        self._active_lyric_idx = active_lyric_index(lyrics.lines, self._pos) if lyrics.synced else -1
+        self._lyrics_offset_ms = int(offset_ms)
+        self._active_lyric_idx = (
+            active_lyric_index(lyrics.lines, self._pos, offset_ms=self._lyrics_offset_ms)
+            if lyrics.synced
+            else -1
+        )
+        self._active_word_idx = (
+            active_word_index(
+                lyrics.lines[self._active_lyric_idx],
+                self._pos,
+                offset_ms=self._lyrics_offset_ms,
+            )
+            if self._active_lyric_idx >= 0
+            else -1
+        )
         if self._side_panel == "lyrics":
             self._render_side_panel()
 
@@ -1399,6 +1581,25 @@ class NowPlayingView(Widget):
         if loading:
             self._lyrics = LyricsResult()
             self._active_lyric_idx = -1
+            self._active_word_idx = -1
+        if self._side_panel == "lyrics":
+            self._render_side_panel()
+
+    def set_lyrics_offset(self, offset_ms: int) -> None:
+        self._lyrics_offset_ms = int(offset_ms)
+        if self._lyrics.synced and self._lyrics.lines:
+            self._active_lyric_idx = active_lyric_index(
+                self._lyrics.lines, self._pos, offset_ms=self._lyrics_offset_ms
+            )
+            self._active_word_idx = (
+                active_word_index(
+                    self._lyrics.lines[self._active_lyric_idx],
+                    self._pos,
+                    offset_ms=self._lyrics_offset_ms,
+                )
+                if self._active_lyric_idx >= 0
+                else -1
+            )
         if self._side_panel == "lyrics":
             self._render_side_panel()
 
@@ -1423,10 +1624,23 @@ class NowPlayingView(Widget):
         self._dur = duration
         self._render_progress()
         if self._lyrics.synced and self._lyrics.lines:
-            new_idx = active_lyric_index(self._lyrics.lines, pos)
+            new_idx = active_lyric_index(
+                self._lyrics.lines, pos, offset_ms=self._lyrics_offset_ms
+            )
+            new_word = (
+                active_word_index(
+                    self._lyrics.lines[new_idx], pos, offset_ms=self._lyrics_offset_ms
+                )
+                if new_idx >= 0
+                else -1
+            )
             if new_idx != self._active_lyric_idx:
                 self._active_lyric_idx = new_idx
+                self._active_word_idx = new_word
                 self._style_lyric_lines(scroll_to_active=True)
+            elif new_word != self._active_word_idx:
+                self._active_word_idx = new_word
+                self._style_lyric_lines(scroll_to_active=False)
 
     def set_state(self, is_playing: bool, is_paused: bool, is_buffering: bool) -> None:
         self._state = (is_playing, is_paused, is_buffering)
@@ -1453,6 +1667,14 @@ class NowPlayingView(Widget):
 
     def set_speed(self, speed: float) -> None:
         self._speed = float(speed)
+        self._render_controls()
+
+    def set_eq_preset(self, preset_id: str) -> None:
+        self._eq_preset = preset_id or "flat"
+        self._render_controls()
+
+    def set_skip_silence(self, enabled: bool) -> None:
+        self._skip_silence = bool(enabled)
         self._render_controls()
 
     def set_sleep_remaining(self, seconds: int) -> None:
@@ -1501,28 +1723,28 @@ class HelpScreen(ModalScreen):
         ("x", "cycle crossfade (off / 3s / 6s)"),
         ("N", "toggle loudness normalization"),
         ("C", "cycle playback speed (1x..2x)"),
+        ("E", "cycle 7-band equalizer preset"),
+        ("M", "toggle skip silence"),
         ("Z", "cycle sleep timer (15..60m)"),
+        ("< / >", "adjust lyrics timing -/+0.25s"),
+        ("L / O", "toggle lyrics / up-next split"),
+        ("D", "toggle dynamic album-art tint"),
         ("j / k", "move down / up"),
         ("J / K", "reorder queue down / up"),
         ("[ / ]", "switch sub-tab / stats period"),
         ("enter", "play highlighted / open item"),
         ("a / i", "append to queue / play next"),
-        ("A", "queue every track in view"),
-        ("P", "play every track in view"),
+        ("A / P", "queue all / play all in view"),
         ("R", "start song radio"),
         ("g / G", "open current artist / album"),
-        ("f", "add / remove favourite"),
-        ("F", "open favourites"),
+        ("I", "song info & credits"),
+        ("f / F", "toggle favourite / open library"),
         ("d", "remove from queue / favourites"),
         ("S / c", "shuffle / clear queue"),
-        ("/", "focus search"),
+        ("/", "focus search (or Spotify URL)"),
         ("t h e r s F q w Y ,", "jump to view / settings"),
-        ("b", "toggle left navigation sidebar"),
-        ("L / O", "toggle lyrics / up-next split"),
-        ("D", "toggle dynamic album-art tint"),
-        ("u", "refresh recommendations"),
-        ("U", "check for updates"),
-        ("v", "toggle the visualizer"),
+        ("b / v", "toggle sidebar / cava spectrum"),
+        ("u / U", "refresh recs / check updates"),
         ("w / m", "maximize / minimize album window"),
         ("T", "sync Omarchy theme"),
         ("?", "toggle this help"),
@@ -1535,14 +1757,96 @@ class HelpScreen(ModalScreen):
 
     def compose(self) -> ComposeResult:
         t = _palette(self)
-        rows = "\n".join(
-            f"[bold {t.accent}]{escape(key):<9}[/] [{t.foreground}]{escape(desc)}[/]"
-            for key, desc in self.ROWS
-        )
+        mid = (len(self.ROWS) + 1) // 2
+        left_rows = self.ROWS[:mid]
+        right_rows = self.ROWS[mid:]
+        lines: List[str] = []
+        for idx in range(mid):
+            lk, ld = left_rows[idx]
+            left_cell = f"[bold {t.accent}]{escape(lk):<7}[/] [{t.foreground}]{escape(ld):<29}[/]"
+            if idx < len(right_rows):
+                rk, rd = right_rows[idx]
+                right_cell = f"[bold {t.accent}]{escape(rk):<10}[/] [{t.foreground}]{escape(rd)}[/]"
+            else:
+                right_cell = ""
+            lines.append(f"{left_cell} [{t.border}]│[/] {right_cell}")
+
         with Container(id="help_panel"):
             title = "KEYBINDINGS"
             if self._theme_name:
                 title = f"KEYBINDINGS  ·  {escape(self._theme_name)}"
             yield Static(f"[bold {t.accent}]{title}[/]", classes="help_title")
-            yield Static(rows, classes="help_line")
+            yield Static(f"[{t.border}]{'─' * 72}[/]")
+            yield Static("\n".join(lines), classes="help_line")
+            yield Static(f"[{t.border}]{'─' * 72}[/]")
             yield Static(f"[{t.muted}]press ? or esc to close[/]", classes="help_footer")
+
+
+class SongInfoScreen(ModalScreen):
+    """Modal showing release info, YouTube stats, stream codec, and track credits."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close", show=False),
+        Binding("I", "dismiss", "Close", show=False),
+        Binding("q", "dismiss", "Close", show=False),
+    ]
+
+    def __init__(self, track: Track, info: Optional[SongInfo] = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._track = track
+        self._info = info
+
+    def compose(self) -> ComposeResult:
+        t = _palette(self)
+        with Container(id="song_info_panel"):
+            yield Static(f"[bold {t.accent}]SONG INFO & CREDITS[/]", classes="help_title")
+            yield Static(
+                f"[bold {t.foreground}]{escape(self._track.title)}[/]\n"
+                f"[{t.secondary}]{escape(self._track.artist)}[/]",
+                id="song_info_subtitle",
+            )
+            yield VerticalScroll(Static(self._render_body_markup(), id="song_info_body"), id="song_info_scroll")
+            yield Static(f"[{t.muted}]press I, q, or esc to close[/]", classes="help_footer")
+
+    def set_info(self, info: SongInfo) -> None:
+        self._info = info
+        try:
+            self.query_one("#song_info_body", Static).update(self._render_body_markup())
+        except Exception:
+            pass
+
+    def _render_body_markup(self) -> str:
+        t = _palette(self)
+        info = self._info
+        if info is None:
+            album_line = f"[{t.muted}]Album:[/] [{t.foreground}]{escape(self._track.album)}[/]\n" if self._track.album else ""
+            return f"\n{album_line}[{t.muted}]fetching release date, counts & credits…[/]"
+
+        rows: List[Tuple[str, str]] = [
+            ("Album", info.album or self._track.album or "—"),
+            ("Release", info.release_date or info.release_year or "—"),
+            ("Views", info.views or "—"),
+            ("Likes", info.likes or "—"),
+            ("Comments", info.comments or "—"),
+        ]
+        if info.codec_info:
+            rows.append(("Audio", info.codec_info))
+
+        lines = [
+            f"[{t.muted}]{escape(label + ':'):<11}[/] [{t.foreground}]{escape(val)}[/]"
+            for label, val in rows
+        ]
+        if info.credits:
+            lines.append("")
+            lines.append(f"[bold {t.accent}]CREDITS[/]")
+            for c in info.credits:
+                lines.append(f"[{t.secondary}]{escape(c.role)}[/]")
+                lines.append(f"  [{t.foreground}]{escape(c.text)}[/]")
+        elif info.failed:
+            lines.append("")
+            lines.append(f"[{t.warning}]could not fetch full remote credits[/]")
+        else:
+            lines.append("")
+            lines.append(f"[{t.muted}]no extra credits listed[/]")
+
+        return "\n".join(lines)

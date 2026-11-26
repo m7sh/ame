@@ -18,6 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+import requests
+
 from api import Track
 from artwork import sized_artwork_url
 
@@ -286,3 +288,115 @@ class DiscordPresence:
                 sock.close()
             except Exception:
                 pass
+
+
+class ListenBrainzScrobbler:
+    """Zero-OAuth ListenBrainz ``playing_now`` & ``single`` listen submitter."""
+
+    API_URL = "https://api.listenbrainz.org/1/submit-listens"
+
+    def __init__(
+        self,
+        token: str = "",
+        enabled: bool = True,
+        session: Optional[requests.Session] = None,
+    ) -> None:
+        env_token = os.environ.get("AME_LISTENBRAINZ_TOKEN", "").strip()
+        self.token = (token or env_token).strip()
+        self.enabled = bool(enabled)
+        self._session = session or requests.Session()
+        self._scrobbled_track_key: Optional[str] = None
+        self._lock = threading.Lock()
+
+    def configure(self, token: str = "", enabled: bool = True) -> None:
+        env_token = os.environ.get("AME_LISTENBRAINZ_TOKEN", "").strip()
+        with self._lock:
+            self.token = (token or env_token).strip()
+            self.enabled = bool(enabled)
+
+    def _is_active(self) -> bool:
+        if os.environ.get("AME_DISABLE_SCROBBLE") == "1":
+            return False
+        return bool(self.enabled and self.token)
+
+    @staticmethod
+    def build_payload(
+        listen_type: str,
+        track: Track,
+        listened_at: Optional[int] = None,
+        pos_seconds: float = 0.0,
+    ) -> Dict[str, Any]:
+        primary_artist = (track.artist or "Unknown Artist").split(",")[0].strip() or "Unknown Artist"
+        info: Dict[str, Any] = {"submission_client": "ame"}
+        if track.duration_seconds > 0:
+            info["duration_ms"] = int(track.duration_seconds) * 1000
+        if listen_type == "playing_now":
+            info["position_ms"] = int(max(0.0, pos_seconds) * 1000)
+
+        meta: Dict[str, Any] = {
+            "artist_name": primary_artist,
+            "track_name": track.title,
+            "additional_info": info,
+        }
+        if track.album:
+            meta["release_name"] = track.album
+
+        entry: Dict[str, Any] = {"track_metadata": meta}
+        if listen_type == "single":
+            entry["listened_at"] = int(listened_at or time.time())
+        return {"listen_type": listen_type, "payload": [entry]}
+
+    def _post_async(self, payload: Dict[str, Any], token: str) -> None:
+        def _run() -> None:
+            try:
+                self._session.post(
+                    self.API_URL,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Token {token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=5.0,
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def submit_playing_now(self, track: Optional[Track], pos_seconds: float = 0.0) -> bool:
+        if track is None or not self._is_active():
+            return False
+        with self._lock:
+            self._scrobbled_track_key = None
+            token = self.token
+        payload = self.build_payload("playing_now", track, pos_seconds=pos_seconds)
+        self._post_async(payload, token)
+        return True
+
+    def maybe_scrobble(
+        self,
+        track: Optional[Track],
+        listened_seconds: float,
+        duration_seconds: float = 0.0,
+    ) -> bool:
+        if track is None or not self._is_active():
+            return False
+        dur = duration_seconds if duration_seconds > 0 else float(track.duration_seconds or 0)
+        threshold = max(30.0, min(dur * 0.5, 240.0)) if dur > 0 else 60.0
+        if listened_seconds < threshold:
+            return False
+
+        key = f"{track.id}:{int(time.time() // 300)}"
+        with self._lock:
+            if self._scrobbled_track_key == track.id:
+                return False
+            self._scrobbled_track_key = track.id
+            token = self.token
+        _ = key
+        payload = self.build_payload(
+            "single",
+            track,
+            listened_at=int(time.time() - listened_seconds),
+        )
+        self._post_async(payload, token)
+        return True

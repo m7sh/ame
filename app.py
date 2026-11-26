@@ -52,13 +52,16 @@ from textual import events
 
 from api import YTMusicAPI, Track, Playlist, Category
 from artwork import ArtworkCache, extract_artwork_colors
-from integrations import DiscordPresence, MPRISController
-from lyrics import LyricsManager, LyricsResult
+from equalizer import get_eq_preset
+from integrations import DiscordPresence, ListenBrainzScrobbler, MPRISController
+from lyrics import LyricsManager, LyricsOffsetStore, LyricsResult
 from player import MPVPlayer
 from favourites import FavouritesStore
-from recommendations import is_likely_video
+from recommendations import build_taste_profile, infer_track_categories, is_likely_video
 from settings import AppSettingsStore, RecentHistoryStore
+from song_info import fetch_song_info
 from spectrum import CavaSpectrum
+from spotify_import import extract_spotify_playlist_id, import_spotify_playlist
 from stats import ListeningStatsStore
 from theme import OmarchyThemeManager, ThemeColors
 from ui.widgets import (
@@ -68,6 +71,7 @@ from ui.widgets import (
     PlayerBar,
     NowPlayingView,
     HelpScreen,
+    SongInfoScreen,
     Spectrum,
     MaximizeNowPlayingMsg,
     MinimizeNowPlayingMsg,
@@ -135,6 +139,7 @@ class AmeApp(App):
         Binding("R", "radio_selected", "Radio", show=False),
         Binding("g", "open_current_artist", "Open Artist", show=False),
         Binding("G", "open_current_album", "Open Album", show=False),
+        Binding("I", "show_song_info", "Song Info", show=False),
         Binding("plus", "volume_up", "Vol +", show=False),
         Binding("equals", "volume_up", "Vol +", show=False),
         Binding("minus", "volume_down", "Vol -", show=False),
@@ -158,6 +163,10 @@ class AmeApp(App):
         Binding("l", "cycle_loop", "Loop Mode", show=False),
         Binding("x", "cycle_crossfade", "Crossfade", show=False),
         Binding("N", "toggle_loudness", "Loudness Norm", show=False),
+        Binding("E", "cycle_eq_preset", "Equalizer", show=False),
+        Binding("M", "toggle_skip_silence", "Skip Silence", show=False),
+        Binding("less_than_sign", "lyrics_offset_back", "Lyrics -0.25s", show=False),
+        Binding("greater_than_sign", "lyrics_offset_forward", "Lyrics +0.25s", show=False),
         Binding("Q", "quit_app", "Quit", show=False),
         Binding("ctrl+c", "quit_app", "Quit", show=False),
         Binding("h", "switch_view_home", "Home", show=False),
@@ -193,10 +202,16 @@ class AmeApp(App):
         self.player.crossfade_seconds = s.crossfade_seconds
         self.player.loudness_normalization = s.loudness_normalization
         self.player.speed = s.speed
+        self.player.eq_preset = s.eq_preset
+        self.player.skip_silence = s.skip_silence
 
         self.favourites = FavouritesStore()
         self.mpris: Optional[MPRISController] = None
         self.discord: Optional[DiscordPresence] = None
+        self.scrobbler = ListenBrainzScrobbler(
+            token=s.listenbrainz_token,
+            enabled=s.scrobble_enabled,
+        )
         self.spectrum: Optional[CavaSpectrum] = None
         self._visualizer_on = s.visualizer_enabled
         self._dynamic_tint = s.dynamic_art_tint
@@ -221,6 +236,7 @@ class AmeApp(App):
         self._last_tick_ts: float = time.monotonic()
         self._pending_listen_track: Optional[Track] = None
         self._pending_listen_sec: float = 0.0
+        self._track_listen_accum_s: float = 0.0
         self._last_mpris_pos_sync: float = 0.0
 
     # ------------------------------------------------------------------ #
@@ -283,6 +299,8 @@ class AmeApp(App):
         self.player.on_volume_change = self._on_player_volume_change
         self.player.on_crossfade_change = self._on_player_crossfade_change
         self.player.on_speed_change = self._on_player_speed_change
+        self.player.on_eq_change = self._on_player_eq_change
+        self.player.on_skip_silence_change = self._on_player_skip_silence_change
 
         s = self.settings.data
         if s.mpris_enabled:
@@ -299,17 +317,22 @@ class AmeApp(App):
         bar.set_crossfade(s.crossfade_seconds)
         bar.set_loudness(s.loudness_normalization)
         bar.set_speed(s.speed)
+        bar.set_eq_preset(s.eq_preset)
+        bar.set_skip_silence(s.skip_silence)
 
         np = self.query_one("#view_now_playing", NowPlayingView)
         np.set_crossfade(s.crossfade_seconds)
         np.set_loudness(s.loudness_normalization)
         np.set_speed(s.speed)
+        np.set_eq_preset(s.eq_preset)
+        np.set_skip_silence(s.skip_silence)
         np.set_dynamic_tint(s.dynamic_art_tint)
         np.set_show_nerd_stats(s.show_nerd_stats)
 
         self._refresh_favourites()
         self._refresh_settings_view()
         self._sync_sidebar_visibility()
+        self._sync_sidebar_meta()
 
         self.set_interval(0.25, self._tick_progress)
         self.set_interval(1.5, self._check_theme_sync)
@@ -342,17 +365,23 @@ class AmeApp(App):
         if self.player.is_playing and not self.player.is_paused:
             pos = self.player.playback_pos
             dur = self.player.duration
-            self.query_one("#player_bar", PlayerBar).set_progress(pos, dur)
-            self.query_one("#view_now_playing", NowPlayingView).set_progress(pos, dur)
+            try:
+                self.query_one("#player_bar", PlayerBar).set_progress(pos, dur)
+                self.query_one("#view_now_playing", NowPlayingView).set_progress(pos, dur)
+            except Exception:
+                return
 
             cur = self.player.current_track
             if cur is not None:
                 if self._pending_listen_track is None or self._pending_listen_track.id != cur.id:
                     self._flush_listening_stats()
                     self._pending_listen_track = cur
+                    self._track_listen_accum_s = 0.0
                 self._pending_listen_sec += dt
+                self._track_listen_accum_s += dt
                 if self._pending_listen_sec >= 5.0:
                     self._flush_listening_stats()
+                self.scrobbler.maybe_scrobble(cur, self._track_listen_accum_s, dur)
 
             if self.mpris and now - self._last_mpris_pos_sync >= 2.0:
                 self._last_mpris_pos_sync = now
@@ -491,6 +520,7 @@ class AmeApp(App):
             bar.set_favourite(is_fav)
             np.set_track(track, quality, stream_info)
             np.set_favourite(is_fav)
+            self._sync_sidebar_meta()
 
             if self.mpris:
                 self.mpris.update_track(track)
@@ -519,6 +549,8 @@ class AmeApp(App):
             if track.id != self._current_artwork_track_id:
                 self._flush_listening_stats()
                 self._pending_listen_track = track
+                self._track_listen_accum_s = 0.0
+                self.scrobbler.submit_playing_now(track, self.player.playback_pos)
                 try:
                     self.stats.record_play(track)
                     self.recent_history.record(track)
@@ -548,10 +580,12 @@ class AmeApp(App):
             if track.id != self._current_lyrics_track_id:
                 self._current_lyrics_track_id = track.id
                 self._lyrics_seq += 1
+                offset_ms = self.lyrics_manager.offsets.get(track.id)
                 cached_lyr = self.lyrics_manager.get_cached(track.id, track.title, track.artist)
                 if cached_lyr is not None:
-                    np.set_lyrics(cached_lyr, loading=False)
+                    np.set_lyrics(cached_lyr, loading=False, offset_ms=offset_ms)
                 else:
+                    np.set_lyrics_offset(offset_ms)
                     np.set_lyrics_loading(True)
                     self.load_lyrics_worker(track, self._lyrics_seq)
         self._safe_call(_update)
@@ -590,7 +624,10 @@ class AmeApp(App):
             cur = self.player.current_track
             if cur is None or cur.id != track.id:
                 return
-            self.query_one("#view_now_playing", NowPlayingView).set_lyrics(res, loading=False)
+            offset_ms = self.lyrics_manager.offsets.get(track.id)
+            self.query_one("#view_now_playing", NowPlayingView).set_lyrics(
+                res, loading=False, offset_ms=offset_ms
+            )
 
         self._safe_call(_apply)
 
@@ -653,6 +690,7 @@ class AmeApp(App):
         def _update():
             self.query_one("#player_bar", PlayerBar).set_crossfade(seconds)
             self.query_one("#view_now_playing", NowPlayingView).set_crossfade(seconds)
+            self._sync_sidebar_meta()
         self._safe_call(_update)
 
     def _on_player_speed_change(self, speed: float) -> None:
@@ -663,6 +701,33 @@ class AmeApp(App):
             if self.mpris:
                 self.mpris.update_speed(speed)
         self._safe_call(_update)
+
+    def _on_player_eq_change(self, preset_id: str) -> None:
+        def _update():
+            self.query_one("#player_bar", PlayerBar).set_eq_preset(preset_id)
+            self.query_one("#view_now_playing", NowPlayingView).set_eq_preset(preset_id)
+            self._sync_sidebar_meta()
+        self._safe_call(_update)
+
+    def _on_player_skip_silence_change(self, enabled: bool) -> None:
+        def _update():
+            self.query_one("#player_bar", PlayerBar).set_skip_silence(enabled)
+            self.query_one("#view_now_playing", NowPlayingView).set_skip_silence(enabled)
+            self._sync_sidebar_meta()
+        self._safe_call(_update)
+
+    def _sync_sidebar_meta(self) -> None:
+        try:
+            tr = self.player.current_track
+            title = tr.title if tr is not None else ""
+            self.query_one("#sidebar", Sidebar).set_playback_meta(
+                track_title=title,
+                eq_preset=self.player.eq_preset,
+                crossfade_s=self.player.crossfade_seconds,
+                skip_silence=self.player.skip_silence,
+            )
+        except Exception:
+            pass
 
     def _on_spectrum_bands(self, bands) -> None:
         self._safe_call(self._set_spectrum_bands, bands)
@@ -700,6 +765,7 @@ class AmeApp(App):
         favs = self.favourites.all()
         recent = self.recent_history.all()
         summary = self.stats.summary("month")
+        all_summary = self.stats.summary("all")
         trending = self.api.get_trending_songs()
         recs = self.api.get_recommendations(
             favourites=favs,
@@ -707,6 +773,9 @@ class AmeApp(App):
             trending_seed=trending,
             recent_history=recent,
             stats_top_artists=summary.top_artists,
+            stats_top_tracks=[s.track for s in summary.top_tracks],
+            stats_track_entries=list(summary.top_tracks) + list(all_summary.top_tracks),
+            all_time_artists=all_summary.top_artists,
         )
         playlists = self.api.get_recommended_playlists(
             favourites=favs,
@@ -928,17 +997,39 @@ class AmeApp(App):
         finally:
             self._safe_call(self._set_status, "")
 
+    def _build_current_taste_profile(self):
+        summary = self.stats.summary("month")
+        all_summary = self.stats.summary("all")
+        return build_taste_profile(
+            favourites=self.favourites.all(),
+            recent_history=self.recent_history.all(),
+            session_history=self.player.history,
+            stats_top_artists=summary.top_artists,
+            stats_top_tracks=[s.track for s in summary.top_tracks],
+            stats_track_entries=list(summary.top_tracks) + list(all_summary.top_tracks),
+            all_time_artists=all_summary.top_artists,
+        )
+
     @work(group="autoplay_loader", exclusive=True, thread=True)
     def run_autoplay_worker(self, last_track: Track) -> None:
-        self._safe_call(self._set_status, "finding more music…")
+        self._safe_call(self._set_status, "finding more music in this vibe…")
         try:
             existing = list(self.player.history[-15:]) + [last_track]
-            recs = self.api.get_radio(
-                last_track.id,
-                limit=20,
-                existing=existing,
-                prefer_videos=is_likely_video(last_track),
-            )
+            recs = None
+            if hasattr(self.api, "get_category_queue"):
+                profile = self._build_current_taste_profile()
+                cand = self.api.get_category_queue(
+                    last_track, limit=25, taste_profile=profile
+                )
+                if isinstance(cand, list) and cand:
+                    recs = cand
+            if not recs:
+                recs = self.api.get_radio(
+                    last_track.id,
+                    limit=20,
+                    existing=existing,
+                    prefer_videos=is_likely_video(last_track),
+                )
             recs = [t for t in recs if t.id != last_track.id] or recs
             if recs:
                 def _play():
@@ -956,28 +1047,75 @@ class AmeApp(App):
 
     @work(group="related_queue_loader", exclusive=True, thread=True)
     def load_related_queue_worker(self, seed_track: Track) -> None:
-        self._safe_call(self._set_status, "finding related music…")
+        self._safe_call(self._set_status, "building category queue…")
         try:
-            recommendations = self.api.get_radio(
-                seed_track.id,
-                limit=35,
-                existing=[seed_track],
-                prefer_videos=is_likely_video(seed_track),
-            )
-            recs = [t for t in recommendations if t.id != seed_track.id] or recommendations
+            recommendations = None
+            if hasattr(self.api, "get_category_queue"):
+                profile = self._build_current_taste_profile()
+                cand = self.api.get_category_queue(
+                    seed_track, limit=30, taste_profile=profile
+                )
+                if isinstance(cand, list) and cand:
+                    recommendations = cand
+            if not recommendations:
+                recommendations = self.api.get_radio(
+                    seed_track.id,
+                    limit=30,
+                    existing=[seed_track],
+                    prefer_videos=is_likely_video(seed_track),
+                )
+            recs = [t for t in (recommendations or []) if t.id != seed_track.id] or (recommendations or [])
             if recs:
+                cat_hint = infer_track_categories(seed_track).summary_query_hint()
+                label = f"{cat_hint} " if cat_hint else "similar "
                 def _update():
                     if self.player.current_track is None or self.player.current_track.id == seed_track.id:
                         self.player.append_queue(recs)
-                        self.notify(f"queued {len(recs)} related tracks", timeout=3)
+                        self.notify(f"queued {len(recs)} {label}tracks", timeout=3)
                 self._safe_call(_update)
         except Exception as e:
-            self._safe_call(self.notify, f"could not load related tracks: {e}", severity="warning")
+            self._safe_call(self.notify, f"could not load category queue: {e}", severity="warning")
         finally:
             self._safe_call(self._set_status, "")
 
     @work(group="search_loader", exclusive=True, thread=True)
     def search_worker(self, query: str, live: bool = False, token: int = 0) -> None:
+        spotify_pid = extract_spotify_playlist_id(query)
+        if spotify_pid:
+            if live:
+                return
+            self._safe_call(self._set_status, "importing Spotify playlist…")
+            self._safe_call(
+                lambda: self.query_one("#view_search", SearchView).show_loading(
+                    "IMPORTING SPOTIFY PLAYLIST", "fetching tracks & matching on YouTube Music…"
+                )
+            )
+            try:
+                playlist, tracks, unmatched = import_spotify_playlist(
+                    query,
+                    search_fn=self.api.search_songs,
+                )
+
+                def _open_imported() -> None:
+                    if token and token != self._search_seq:
+                        return
+                    self.query_one("#view_search", SearchView).hide_loading()
+                    pl_view = self.query_one("#view_playlist_detail", PlaylistDetailView)
+                    pl_view.set_playlist(playlist, tracks)
+                    self.switch_view("view_playlist_detail")
+                    note = f"imported {len(tracks)} tracks from {playlist.title}"
+                    if unmatched:
+                        note += f" ({unmatched} unmatched)"
+                    self.notify(note, timeout=3)
+
+                self._safe_call(_open_imported)
+            except Exception as e:
+                self._safe_call(lambda: self.query_one("#view_search", SearchView).hide_loading())
+                self._safe_call(self.notify, f"Spotify import failed: {e}", severity="error")
+            finally:
+                self._safe_call(self._set_status, "")
+            return
+
         # Live suggestions stay quiet (no status flicker, no error popups) and
         # fetch a smaller batch; an explicit submit gets the full result set.
         if not live:
@@ -1114,6 +1252,18 @@ class AmeApp(App):
                     "playback rate across mpv decks (0.75× – 2×)",
                 ),
                 (
+                    "eq_preset",
+                    "equalizer preset [E]",
+                    get_eq_preset(self.player.eq_preset).label.lower(),
+                    "7-band EQ curve with headroom preamp (16 BitChord presets)",
+                ),
+                (
+                    "skip_silence",
+                    "skip silence [M]",
+                    "on" if self.player.skip_silence else "off",
+                    "trim quiet gaps during playback via ffmpeg silenceremove",
+                ),
+                (
                     "show_nerd_stats",
                     "nerd stats (codec / cache / gain)",
                     "on" if s.show_nerd_stats else "off",
@@ -1148,6 +1298,12 @@ class AmeApp(App):
                     "mpris2 desktop media bridge",
                     "on" if s.mpris_enabled else "off",
                     "expose playerctl / Waybar / desktop media controls",
+                ),
+                (
+                    "scrobble_enabled",
+                    "listenbrainz scrobbling",
+                    ("on" if (s.scrobble_enabled and (s.listenbrainz_token or self.scrobbler.token)) else ("no token" if s.scrobble_enabled else "off")),
+                    "submit listens to ListenBrainz (set token in settings.json)",
                 ),
             ]
             self.query_one("#view_settings", SettingsView).set_rows(rows)
@@ -1251,6 +1407,10 @@ class AmeApp(App):
             self.action_toggle_loudness()
         elif action == "speed":
             self.action_cycle_speed()
+        elif action == "eq":
+            self.action_cycle_eq_preset()
+        elif action == "skip_silence":
+            self.action_toggle_skip_silence()
         elif action == "sleep":
             self.action_cycle_sleep_timer()
         elif action == "toggle_lyrics":
@@ -1268,6 +1428,8 @@ class AmeApp(App):
             self.action_open_current_artist()
         elif action == "open_album":
             self.action_open_current_album()
+        elif action == "song_info":
+            self.action_show_song_info()
         elif action == "minimize":
             self._minimize_now_playing()
         elif action == "maximize":
@@ -1319,6 +1481,10 @@ class AmeApp(App):
             self.action_toggle_loudness()
         elif k == "speed":
             self.action_cycle_speed()
+        elif k == "eq_preset":
+            self.action_cycle_eq_preset()
+        elif k == "skip_silence":
+            self.action_toggle_skip_silence()
         elif k == "show_nerd_stats":
             s.show_nerd_stats = not s.show_nerd_stats
             self.settings.save()
@@ -1365,6 +1531,14 @@ class AmeApp(App):
                     self.mpris.close()
                     self.mpris = None
             self.notify(f"mpris2 · {'on' if s.mpris_enabled else 'off'}", timeout=2)
+        elif k == "scrobble_enabled":
+            s.scrobble_enabled = not s.scrobble_enabled
+            self.settings.save()
+            self.scrobbler.configure(token=s.listenbrainz_token, enabled=s.scrobble_enabled)
+            if s.scrobble_enabled and not self.scrobbler.token:
+                self.notify("scrobbling on · set listenbrainz_token in settings.json", timeout=3)
+            else:
+                self.notify(f"listenbrainz scrobbling · {'on' if s.scrobble_enabled else 'off'}", timeout=2)
         self._refresh_settings_view()
 
     # ------------------------------------------------------------------ #
@@ -1436,6 +1610,37 @@ class AmeApp(App):
         self._refresh_settings_view()
         self.notify(f"playback speed · {rate:.2g}×", timeout=2)
 
+    def action_cycle_eq_preset(self) -> None:
+        preset_id = self.player.cycle_eq_preset()
+        self.settings.data.eq_preset = preset_id
+        self.settings.save()
+        self._refresh_settings_view()
+        self.notify(f"equalizer · {get_eq_preset(preset_id).label}", timeout=2)
+
+    def action_toggle_skip_silence(self) -> None:
+        enabled = self.player.toggle_skip_silence()
+        self.settings.data.skip_silence = enabled
+        self.settings.save()
+        self._refresh_settings_view()
+        self.notify(f"skip silence · {'on' if enabled else 'off'}", timeout=2)
+
+    def _adjust_lyrics_offset(self, delta_ms: int) -> None:
+        track = self.player.current_track
+        if track is None:
+            return
+        new_ms = self.lyrics_manager.offsets.adjust(track.id, delta_ms)
+        try:
+            self.query_one("#view_now_playing", NowPlayingView).set_lyrics_offset(new_ms)
+        except Exception:
+            pass
+        self.notify(f"lyrics offset · {new_ms / 1000:+.2f}s", timeout=2)
+
+    def action_lyrics_offset_back(self) -> None:
+        self._adjust_lyrics_offset(-LyricsOffsetStore.STEP_MS)
+
+    def action_lyrics_offset_forward(self) -> None:
+        self._adjust_lyrics_offset(LyricsOffsetStore.STEP_MS)
+
     def action_cycle_sleep_timer(self) -> None:
         idx = (
             SLEEP_TIMER_PRESETS_MIN.index(self._sleep_minutes)
@@ -1502,6 +1707,25 @@ class AmeApp(App):
             self.load_album_worker(tr.album_id, tr.album)
         else:
             self.notify("no album page link for this track", severity="warning", timeout=2)
+
+    def action_show_song_info(self) -> None:
+        tr = self._get_highlighted_track() or self.player.current_track
+        if tr is None:
+            self.notify("highlight or play a track first", severity="warning", timeout=2)
+            return
+        modal = SongInfoScreen(tr)
+        self.push_screen(modal)
+        stream = (
+            self.player.current_stream_info
+            if self.player.current_track and self.player.current_track.id == tr.id
+            else None
+        )
+        self._load_song_info_worker(tr, modal, stream)
+
+    @work(group="song_info_loader", exclusive=True, thread=True)
+    def _load_song_info_worker(self, track: Track, modal: SongInfoScreen, stream_info: Any) -> None:
+        info = fetch_song_info(track, api=self.api, stream_info=stream_info)
+        self._safe_call(modal.set_info, info)
 
     def action_play_next_selected(self) -> None:
         track = self._get_highlighted_track()

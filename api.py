@@ -368,16 +368,17 @@ class YTMusicAPI:
         recent_history: Optional[List[Track]] = None,
         stats_top_artists: Optional[List[Any]] = None,
         stats_top_tracks: Optional[List[Track]] = None,
+        stats_track_entries: Optional[List[Any]] = None,
+        all_time_artists: Optional[List[Any]] = None,
     ) -> List[Track]:
-        """Generate tailored, recording-deduped & artist-diverse picks.
+        """Generate tailored, listening-history-weighted & category-coherent picks.
 
         Combines:
-        1. Watch radios seeded from weighted favourites + recent + monthly top tracks
-        2. Top-taste & similar ("Fans might also like") artist tracks for fresh discovery
-        3. YouTube Music Home Quick Picks / Mixed shelves
-        4. Current time-of-day mood playlist tracks
-        Filtered through `extend_station` (audio/video recording dedupe +
-        `PER_ARTIST_LIMIT = 2`), falling back to trending only for sparse/cold-start profiles.
+        1. Watch radios + ``You might also like`` related feeds from completion-weighted
+           listening history seeds (skipping early-skipped tracks).
+        2. Top-taste & similar ("Fans might also like") artist tracks for fresh discovery.
+        3. Category/language/vibe playlists matching the listener's dominant history profile.
+        4. YouTube Music Home Quick Picks / time-of-day mood tracks (when sparse or cold-start).
         """
         from recommendations import (
             ARTIST_POOL,
@@ -385,6 +386,7 @@ class YTMusicAPI:
             extend_station,
             interleave_buckets,
             moods_for_hour,
+            rank_recommendations,
             weighted_sample,
         )
 
@@ -394,25 +396,47 @@ class YTMusicAPI:
             session_history=history or [],
             stats_top_artists=stats_top_artists or [],
             stats_top_tracks=stats_top_tracks or [],
+            stats_track_entries=stats_track_entries or [],
+            all_time_artists=all_time_artists or [],
         )
 
         radio_bucket: List[Track] = []
+        related_bucket: List[Track] = []
         artist_bucket: List[Track] = []
+        category_bucket: List[Track] = []
         home_bucket: List[Track] = []
         mood_bucket: List[Track] = []
 
-        sampled_seeds = weighted_sample(profile.seed_tracks[:12], 3) if profile.seed_tracks else []
+        seed_count = 4 if profile.has_history else 2
+        sampled_seeds = (
+            weighted_sample(profile.seed_tracks[:15], seed_count)
+            if profile.seed_tracks
+            else []
+        )
         if not sampled_seeds and trending_seed:
             sampled_seeds = random.sample(trending_seed[:15], min(len(trending_seed[:15]), 2))
 
-        sampled_artists = weighted_sample(profile.artists[:ARTIST_POOL], 2) if profile.artists else []
+        artist_count = 3 if profile.has_history else 2
+        sampled_artists = (
+            weighted_sample(profile.artists[:ARTIST_POOL], artist_count)
+            if profile.artists
+            else []
+        )
         hour_moods = moods_for_hour()
 
-        def _fetch_seed_radio(seed: Track) -> List[Track]:
+        def _fetch_seed_radio_and_related(seed: Track) -> Tuple[List[Track], List[Track]]:
+            rad: List[Track] = []
+            rel: List[Track] = []
             try:
-                return self.get_radio(seed.id, limit=25)
+                rad = self.get_radio(seed.id, limit=22)
             except Exception:
-                return []
+                pass
+            try:
+                _, rel_tracks, _, _ = self.get_song_related_bundle(seed.id, include_watch=False)
+                rel = rel_tracks
+            except Exception:
+                pass
+            return rad, rel
 
         def _fetch_artist_discovery(artist_entry: Any) -> List[Track]:
             aid = artist_entry.artist_id
@@ -430,7 +454,7 @@ class YTMusicAPI:
                 raw = self._client().get_artist(aid)
                 related_tracks: List[Track] = []
                 rel = raw.get("related", {}) if isinstance(raw, dict) else {}
-                for r in (rel.get("results") or [])[:2]:
+                for r in (rel.get("results") or [])[:3]:
                     rid = str(r.get("browseId") or "")
                     if rid.startswith("UC"):
                         try:
@@ -438,8 +462,31 @@ class YTMusicAPI:
                             related_tracks.extend(r_songs[:6])
                         except Exception:
                             pass
-                out = [t for t in (related_tracks + top_songs) if t.id not in profile.heard_ids]
-                return out
+                return [t for t in (related_tracks + top_songs) if t.id not in profile.heard_ids]
+            except Exception:
+                return []
+
+        def _fetch_history_category_tracks() -> List[Track]:
+            if not profile.has_history:
+                return []
+            lang = profile.dominant_language
+            styles = profile.dominant_styles
+            hints: List[str] = []
+            if lang and lang != "english":
+                hints.append(lang)
+            hints.extend(styles[:2])
+            if not hints and profile.artists:
+                hints.append(profile.artists[0].name)
+            query = " ".join(hints[:2]).strip()
+            if not query:
+                return []
+            try:
+                pls = self.search_playlists(f"{query} mix", limit=4)
+                if not pls:
+                    return []
+                pick = random.choice(pls[:min(len(pls), 3)])
+                _, trs = self.get_playlist(pick.id, limit=20)
+                return trs
             except Exception:
                 return []
 
@@ -457,10 +504,11 @@ class YTMusicAPI:
             except Exception:
                 return []
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=8) as pool:
             f_home = pool.submit(self._get_home_feed)
-            f_radios = [pool.submit(_fetch_seed_radio, s) for s in sampled_seeds]
+            f_radios = [pool.submit(_fetch_seed_radio_and_related, s) for s in sampled_seeds]
             f_artists = [pool.submit(_fetch_artist_discovery, a) for a in sampled_artists]
+            f_cat = pool.submit(_fetch_history_category_tracks)
             f_mood = pool.submit(_fetch_mood_sample)
 
             try:
@@ -470,7 +518,9 @@ class YTMusicAPI:
                 pass
             for f in f_radios:
                 try:
-                    radio_bucket.extend(f.result(timeout=8))
+                    rad, rel = f.result(timeout=8)
+                    radio_bucket.extend(rad)
+                    related_bucket.extend(rel)
                 except Exception:
                     pass
             for f in f_artists:
@@ -479,33 +529,36 @@ class YTMusicAPI:
                 except Exception:
                     pass
             try:
+                category_bucket.extend(f_cat.result(timeout=8))
+            except Exception:
+                pass
+            try:
                 mood_bucket.extend(f_mood.result(timeout=8))
             except Exception:
                 pass
 
-        # Mild freshness shuffle inside each bucket before round-robin interleaving
-        for bucket in (radio_bucket, artist_bucket, mood_bucket):
+        for bucket in (radio_bucket, related_bucket, artist_bucket, category_bucket, mood_bucket):
             if len(bucket) > 2:
                 random.shuffle(bucket)
 
-        candidates = interleave_buckets(
-            [artist_bucket, radio_bucket, home_bucket, mood_bucket],
-            limit=max(limit, 40),
-        )
+        if profile.has_history:
+            # History-first ordering: related/artist/radio/category dominate; home/mood only supplement
+            buckets = [related_bucket, artist_bucket, radio_bucket, category_bucket, home_bucket, mood_bucket]
+        else:
+            buckets = [home_bucket, mood_bucket, radio_bucket, artist_bucket]
 
-        # Prefer unheard discovery tracks first; keep already-heard seeds only if sparse
-        fresh_candidates = [t for t in candidates if t.id not in profile.heard_ids]
-        recommended_tracks = extend_station([], fresh_candidates, limit=limit)
-
-        if len(recommended_tracks) < limit:
-            top_up = extend_station(recommended_tracks, candidates, limit=limit - len(recommended_tracks))
-            recommended_tracks.extend(top_up)
+        candidates = interleave_buckets(buckets, limit=max(limit * 2, 60))
+        recommended_tracks = rank_recommendations(candidates, profile, limit=limit)
 
         if len(recommended_tracks) < limit:
             trending_tracks = trending_seed if trending_seed is not None else self.get_trending_songs(limit=25)
             fresh_trending = [t for t in trending_tracks if t.id not in profile.heard_ids]
             recommended_tracks.extend(
-                extend_station(recommended_tracks, fresh_trending or trending_tracks, limit=limit - len(recommended_tracks))
+                extend_station(
+                    recommended_tracks,
+                    fresh_trending or trending_tracks,
+                    limit=limit - len(recommended_tracks),
+                )
             )
 
         return recommended_tracks[:limit]
@@ -866,6 +919,144 @@ class YTMusicAPI:
             "trending": trending,
             "moods": moods,
         }
+
+    def get_song_credits(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch official YouTube Music track credits via ``MPTC{video_id}``."""
+        if not video_id:
+            return None
+        try:
+            yt = self._client()
+            if hasattr(yt, "get_song_credits"):
+                return yt.get_song_credits(f"MPTC{video_id}")
+        except Exception:
+            pass
+        return None
+
+    def get_song_related_bundle(
+        self,
+        video_id: str,
+        watch_limit: int = 30,
+        include_watch: bool = True,
+    ) -> Tuple[List[Track], List[Track], List[Playlist], List[str]]:
+        """Fetch watch playlist + YouTube Music's ``Related`` tab (songs, playlists, artists)."""
+        watch_tracks: List[Track] = []
+        related_tracks: List[Track] = []
+        related_playlists: List[Playlist] = []
+        similar_artist_ids: List[str] = []
+        if not video_id:
+            return watch_tracks, related_tracks, related_playlists, similar_artist_ids
+
+        yt = self._client()
+        try:
+            wp = yt.get_watch_playlist(videoId=video_id, limit=watch_limit) or {}
+        except Exception:
+            return watch_tracks, related_tracks, related_playlists, similar_artist_ids
+
+        if include_watch:
+            for item in wp.get("tracks") or []:
+                tr = _parse_track(item)
+                if tr is not None:
+                    watch_tracks.append(tr)
+
+        related_browse_id = wp.get("related")
+        if related_browse_id and hasattr(yt, "get_song_related"):
+            try:
+                sections = yt.get_song_related(str(related_browse_id)) or []
+                for sec in sections:
+                    if not isinstance(sec, dict):
+                        continue
+                    contents = sec.get("contents")
+                    if not isinstance(contents, list):
+                        continue
+                    for item in contents:
+                        if not isinstance(item, dict):
+                            continue
+                        if item.get("videoId"):
+                            tr = _parse_track(item)
+                            if tr is not None:
+                                related_tracks.append(tr)
+                        elif item.get("playlistId") or (
+                            isinstance(item.get("browseId"), str)
+                            and item["browseId"].startswith(("VL", "PL", "RD", "OLAK"))
+                        ):
+                            pl = _parse_playlist(item, default_author="Related Mix")
+                            if pl is not None:
+                                related_playlists.append(pl)
+                        elif isinstance(item.get("browseId"), str) and item["browseId"].startswith("UC"):
+                            similar_artist_ids.append(item["browseId"])
+            except Exception:
+                pass
+
+        return watch_tracks, related_tracks, related_playlists, similar_artist_ids
+
+    def get_category_queue(
+        self,
+        seed_track: Track,
+        limit: int = 30,
+        taste_profile: Optional[Any] = None,
+    ) -> List[Track]:
+        """Build a queue strictly matching ``seed_track``'s category, language, and vibe."""
+        from recommendations import build_category_queue, infer_track_categories, is_likely_video
+
+        watch_tracks, related_tracks, related_pls, sim_artists = self.get_song_related_bundle(
+            seed_track.id, watch_limit=30, include_watch=True
+        )
+
+        extra_tracks: List[Track] = []
+
+        def _fetch_rel_playlist() -> List[Track]:
+            if not related_pls:
+                return []
+            try:
+                _, trs = self.get_playlist(related_pls[0].id, limit=20)
+                return trs
+            except Exception:
+                return []
+
+        def _fetch_similar_artists() -> List[Track]:
+            out: List[Track] = []
+            ids = list(sim_artists[:2])
+            if not ids and seed_track.artist_id:
+                ids = [seed_track.artist_id]
+            for aid in ids:
+                try:
+                    _, songs, _ = self.get_artist(aid)
+                    out.extend(songs[:8])
+                except Exception:
+                    pass
+            return out
+
+        def _fetch_category_fallback() -> List[Track]:
+            # Only search when watch + related returned sparse results
+            if len(watch_tracks) + len(related_tracks) >= 15:
+                return []
+            cat = infer_track_categories(seed_track)
+            hint = cat.summary_query_hint()
+            primary = (seed_track.artist or "").split(",")[0].strip()
+            q = f"{primary} {hint}".strip() or seed_track.title
+            try:
+                return self.search_songs(q, limit=15)
+            except Exception:
+                return []
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_pl = pool.submit(_fetch_rel_playlist)
+            f_art = pool.submit(_fetch_similar_artists)
+            f_fb = pool.submit(_fetch_category_fallback)
+            for fut in (f_pl, f_art, f_fb):
+                try:
+                    extra_tracks.extend(fut.result(timeout=6))
+                except Exception:
+                    pass
+
+        all_candidates = related_tracks + watch_tracks + extra_tracks
+        return build_category_queue(
+            seed_track,
+            all_candidates,
+            profile=taste_profile,
+            limit=limit,
+            prefer_videos=is_likely_video(seed_track),
+        )
 
     def get_radio(
         self,

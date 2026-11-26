@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from api import Track
 from audio_cache import AudioCache, CachedAudio
+from equalizer import build_mpv_af_chain, next_eq_preset_id, normalize_eq_preset_id
 from stream_resolver import (
     PermanentlyUnplayableError,
     ResolvedStream,
@@ -70,6 +71,8 @@ def _format_mpv_options(
     start_pos: float = 0.0,
     loudness_db: Optional[float] = None,
     normalize_loudness: bool = True,
+    eq_preset: str = "flat",
+    skip_silence: bool = False,
 ) -> Dict[str, Any]:
     """Build per-file mpv loadfile options without leaking unrelated headers."""
     opts: Dict[str, Any] = {
@@ -90,10 +93,14 @@ def _format_mpv_options(
         if extra:
             opts["http-header-fields"] = ",".join(extra)
 
-    if normalize_loudness:
-        gain_db = _compute_loudness_gain_db(loudness_db)
-        if gain_db is not None and abs(gain_db) >= 0.05:
-            opts["af"] = f"volume=volume={gain_db:.2f}dB"
+    gain_db = _compute_loudness_gain_db(loudness_db) if normalize_loudness else None
+    af = build_mpv_af_chain(
+        loudness_gain_db=gain_db,
+        eq_preset=eq_preset,
+        skip_silence=skip_silence,
+    )
+    if af:
+        opts["af"] = af
 
     return opts
 
@@ -396,9 +403,11 @@ class MPVPlayer:
         self._crossfade_thread: Optional[threading.Thread] = None
         self._crossfade_triggered_gen: int = -1
 
-        # Loudness normalization & playback speed
+        # Loudness normalization, EQ, skip silence & playback speed
         self.loudness_normalization: bool = True
         self.speed: float = 1.0
+        self.eq_preset: str = "flat"
+        self.skip_silence: bool = False
 
         # Queue & playback state
         self.queue: List[Track] = []
@@ -426,6 +435,8 @@ class MPVPlayer:
         self.on_crossfade_change: Optional[Callable[[int], None]] = None
         self.on_loudness_change: Optional[Callable[[bool], None]] = None
         self.on_speed_change: Optional[Callable[[float], None]] = None
+        self.on_eq_change: Optional[Callable[[str], None]] = None
+        self.on_skip_silence_change: Optional[Callable[[bool], None]] = None
 
         self._start_mpv()
         atexit.register(self.cleanup)
@@ -782,6 +793,8 @@ class MPVPlayer:
             vol = self.volume
             norm = self.loudness_normalization
             spd = self.speed
+            eq = self.eq_preset
+            skip_sil = self.skip_silence
             deck = self._active_deck
 
         if deck is None:
@@ -794,6 +807,8 @@ class MPVPlayer:
             start_pos=start_pos,
             loudness_db=stream.loudness_db,
             normalize_loudness=norm,
+            eq_preset=eq,
+            skip_silence=skip_sil,
         )
         deck.set_volume(vol)
         deck.send_command(["set_property", "speed", spd])
@@ -915,12 +930,16 @@ class MPVPlayer:
                     if self._armed_next and self._armed_next[1].id == next_t.id:
                         return
                     norm = self.loudness_normalization
+                    eq = self.eq_preset
+                    skip_sil = self.skip_silence
 
                 opts = _format_mpv_options(
                     media_title=self._media_title(next_t),
                     headers=next_stream.headers,
                     loudness_db=next_stream.loudness_db,
                     normalize_loudness=norm,
+                    eq_preset=eq,
+                    skip_silence=skip_sil,
                 )
                 entry_id = deck.load_file(next_stream.url, "append", opts)
                 if entry_id is not None:
@@ -1031,12 +1050,16 @@ class MPVPlayer:
             with self._lock:
                 norm = self.loudness_normalization
                 user_vol = self.volume
+                eq = self.eq_preset
+                skip_sil = self.skip_silence
 
             opts = _format_mpv_options(
                 media_title=self._media_title(incoming_track),
                 headers=incoming_stream.headers,
                 loudness_db=incoming_stream.loudness_db,
                 normalize_loudness=norm,
+                eq_preset=eq,
+                skip_silence=skip_sil,
             )
             incoming_deck.set_volume(0.0)
             incoming_deck.set_pause(False)
@@ -1248,24 +1271,67 @@ class MPVPlayer:
             self.on_crossfade_change(xfade)
         return xfade
 
+    def _apply_audio_filters(self) -> None:
+        """Apply current loudness, EQ preset, and skip-silence filter chain to active deck."""
+        with self._lock:
+            enabled = self.loudness_normalization
+            stream = self._current_stream
+            deck = self._active_deck
+            eq = self.eq_preset
+            skip_sil = self.skip_silence
+            self._disarm_upcoming_locked()
+            cur_gen = self._play_gen
+            playing = self.is_playing
+
+        if deck is not None:
+            gain_db = (
+                _compute_loudness_gain_db(stream.loudness_db)
+                if (enabled and stream is not None)
+                else None
+            )
+            af = build_mpv_af_chain(
+                loudness_gain_db=gain_db,
+                eq_preset=eq,
+                skip_silence=skip_sil,
+            )
+            deck.send_command(["af", "set", af])
+        if playing:
+            self._schedule_lookahead(cur_gen)
+
     def toggle_loudness_normalization(self) -> bool:
         """Toggle YouTube loudnessDb normalization on or off."""
         with self._lock:
             self.loudness_normalization = not self.loudness_normalization
             enabled = self.loudness_normalization
-            stream = self._current_stream
-            deck = self._active_deck
-        if deck is not None:
-            if enabled and stream is not None:
-                gain_db = _compute_loudness_gain_db(stream.loudness_db)
-                if gain_db is not None and abs(gain_db) >= 0.05:
-                    deck.send_command(["af", "set", f"volume=volume={gain_db:.2f}dB"])
-                else:
-                    deck.send_command(["af", "set", ""])
-            else:
-                deck.send_command(["af", "set", ""])
+        self._apply_audio_filters()
         if self.on_loudness_change:
             self.on_loudness_change(enabled)
+        return enabled
+
+    def set_eq_preset(self, preset_id: str) -> str:
+        """Set active 7-band equalizer preset and update live mpv audio filters."""
+        normalized = normalize_eq_preset_id(preset_id)
+        with self._lock:
+            self.eq_preset = normalized
+        self._apply_audio_filters()
+        if self.on_eq_change:
+            self.on_eq_change(normalized)
+        return normalized
+
+    def cycle_eq_preset(self) -> str:
+        """Cycle through BitChord's 16 equalizer presets."""
+        with self._lock:
+            cur = self.eq_preset
+        return self.set_eq_preset(next_eq_preset_id(cur))
+
+    def toggle_skip_silence(self) -> bool:
+        """Toggle silence skipping (ffmpeg silenceremove) on or off."""
+        with self._lock:
+            self.skip_silence = not self.skip_silence
+            enabled = self.skip_silence
+        self._apply_audio_filters()
+        if self.on_skip_silence_change:
+            self.on_skip_silence_change(enabled)
         return enabled
 
     def set_speed(self, rate: float) -> float:

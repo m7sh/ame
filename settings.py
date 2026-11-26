@@ -2,7 +2,7 @@
 settings.py - Persistent user settings and Recently Played history for ame.
 
 Persistent user preferences & recently played history:
-- ``~/.local/share/ame/settings.json``: playback, appearance, and integration prefs
+- ``~/.local/share/ame/settings.json``: playback, audio pipeline, appearance, and integration prefs
 - ``~/.local/share/ame/recent.json``: last 50 played tracks across sessions
 """
 
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from api import Track
+from equalizer import normalize_eq_preset_id
 from favourites import _track_from_dict, _track_to_dict
 
 
@@ -32,12 +33,16 @@ class AppSettings:
     crossfade_seconds: int = 0
     loudness_normalization: bool = True
     speed: float = 1.0
+    eq_preset: str = "flat"
+    skip_silence: bool = False
     show_nerd_stats: bool = True
     dynamic_art_tint: bool = True
     show_sidebar: bool = True
     visualizer_enabled: bool = True
     discord_rpc: bool = True
     mpris_enabled: bool = True
+    scrobble_enabled: bool = True
+    listenbrainz_token: str = ""
 
 
 class AppSettingsStore:
@@ -59,12 +64,16 @@ class AppSettingsStore:
                         crossfade_seconds=int(raw.get("crossfade_seconds", 0) or 0),
                         loudness_normalization=bool(raw.get("loudness_normalization", True)),
                         speed=max(0.5, min(2.5, float(raw.get("speed", 1.0) or 1.0))),
+                        eq_preset=normalize_eq_preset_id(raw.get("eq_preset", "flat")),
+                        skip_silence=bool(raw.get("skip_silence", False)),
                         show_nerd_stats=bool(raw.get("show_nerd_stats", True)),
                         dynamic_art_tint=bool(raw.get("dynamic_art_tint", True)),
                         show_sidebar=bool(raw.get("show_sidebar", True)),
                         visualizer_enabled=bool(raw.get("visualizer_enabled", True)),
                         discord_rpc=bool(raw.get("discord_rpc", True)),
                         mpris_enabled=bool(raw.get("mpris_enabled", True)),
+                        scrobble_enabled=bool(raw.get("scrobble_enabled", True)),
+                        listenbrainz_token=str(raw.get("listenbrainz_token", "") or "").strip(),
                     )
             except Exception:
                 self.data = AppSettings()

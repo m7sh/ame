@@ -7,6 +7,7 @@ track list, keeping the chrome to a minimum.
 
 from typing import Optional, List, Dict, Tuple
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.widget import Widget
 from textual.widgets import (
@@ -22,7 +23,7 @@ from textual.message import Message
 from api import Album, Artist, Category, Playlist, Track, format_seconds
 from stats import ArtistStat, StatsSummary
 from theme import ThemeColors
-from ui.widgets import SectionHeader, AnimatedLoader
+from ui.widgets import SectionHeader, AnimatedLoader, _lerp_hex
 
 
 # --------------------------------------------------------------------------- #
@@ -395,15 +396,15 @@ class TrendingView(TableFitMixin, Widget):
         if event.data_table.id == "recommended_tracks_table":
             if 0 <= event.cursor_row < len(self.recommended_tracks):
                 tr = self.recommended_tracks[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.recommended_tracks[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "recent_tracks_table":
             if 0 <= event.cursor_row < len(self.recent_tracks):
                 tr = self.recent_tracks[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.recent_tracks[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "trending_tracks_table":
             if 0 <= event.cursor_row < len(self.trending_tracks):
                 tr = self.trending_tracks[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.trending_tracks[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "trending_playlists_table":
             if 0 <= event.cursor_row < len(self.playlists):
                 self.post_message(OpenPlaylistMsg(self.playlists[event.cursor_row]))
@@ -560,7 +561,7 @@ class ExploreView(TableFitMixin, Widget):
         elif event.data_table.id == "explore_trending_table":
             if 0 <= event.cursor_row < len(self.trending):
                 tr = self.trending[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.trending[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "explore_moods_table":
             if 0 <= event.cursor_row < len(self.moods):
                 self.post_message(OpenMoodMsg(self.moods[event.cursor_row]))
@@ -926,7 +927,7 @@ class SearchView(TableFitMixin, Widget):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
-            yield Input(placeholder="search songs, albums, artists or playlists…", id="search_input")
+            yield Input(placeholder="search songs, albums, artists, or paste a Spotify playlist URL…", id="search_input")
             yield SectionHeader(id="search_header", classes="section_header")
             yield AnimatedLoader(
                 title="SEARCHING",
@@ -1503,11 +1504,11 @@ class FavouritesView(TableFitMixin, Widget):
         if event.data_table.id == "favourites_table":
             if 0 <= event.cursor_row < len(self.tracks):
                 tr = self.tracks[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.tracks[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "library_recent_table":
             if 0 <= event.cursor_row < len(self.recent_tracks):
                 tr = self.recent_tracks[event.cursor_row]
-                self.post_message(PlayTrackMsg(tr, self.recent_tracks[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tr, auto_related=True))
         elif event.data_table.id == "library_artists_table":
             if 0 <= event.cursor_row < len(self.top_artists):
                 name = self.top_artists[event.cursor_row].name
@@ -1595,20 +1596,26 @@ class StatsView(TableFitMixin, Widget):
             f"  [bold {t.accent}]{dur_str}[/] [{t.muted}]listened[/]  ·  "
             f"[bold {t.foreground}]{summary.total_plays}[/] [{t.muted}]plays[/]  ·  "
             f"[bold {t.foreground}]{summary.unique_tracks}[/] [{t.muted}]tracks[/]  ·  "
-            f"[{t.muted}]top artist:[/] [bold {t.secondary}]{top_artist}[/]"
+            f"[bold {t.foreground}]{summary.unique_artists}[/] [{t.muted}]artists[/]  ·  "
+            f"[{t.muted}]top:[/] [bold {t.secondary}]{top_artist}[/]"
         )
 
         peak = max(summary.hourly_seconds) if summary.hourly_seconds else 0.0
-        bars = ""
+        peak_hr = summary.hourly_seconds.index(peak) if peak > 0 else -1
+        hist = Text(no_wrap=True)
+        hist.append("  00h ", style=t.muted)
         for val in summary.hourly_seconds:
             if peak <= 0 or val <= 0:
-                bars += "▁"
+                hist.append("▁", style=t.border)
             else:
-                idx = max(1, min(len(self._BARS) - 1, int(round((val / peak) * (len(self._BARS) - 1)))))
-                bars += self._BARS[idx]
-        self.query_one("#stats_histogram", Static).update(
-            f"  [{t.muted}]00h [/][bold {t.primary}]{bars}[/][{t.muted}] 23h[/]"
-        )
+                ratio = val / peak
+                idx = max(1, min(len(self._BARS) - 1, int(round(ratio * (len(self._BARS) - 1)))))
+                bar_color = _lerp_hex(t.border, t.accent, ratio)
+                hist.append(self._BARS[idx], style=f"bold {bar_color}" if ratio >= 0.65 else bar_color)
+        hist.append(" 23h", style=t.muted)
+        if peak_hr >= 0:
+            hist.append(f"   ·  peak {peak_hr:02d}:00", style=t.secondary)
+        self.query_one("#stats_histogram", Static).update(hist)
 
         tt = self.query_one("#stats_tracks_table", DataTable)
         tt.clear()
@@ -1651,7 +1658,7 @@ class StatsView(TableFitMixin, Widget):
         if event.data_table.id == "stats_tracks_table" and self._summary:
             if 0 <= event.cursor_row < len(self._summary.top_tracks):
                 tracks = [s.track for s in self._summary.top_tracks]
-                self.post_message(PlayTrackMsg(tracks[event.cursor_row], tracks[event.cursor_row + 1:]))
+                self.post_message(PlayTrackMsg(tracks[event.cursor_row], auto_related=True))
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         self._fit_tables()
@@ -1674,12 +1681,13 @@ class SettingsView(TableFitMixin, Widget):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._rows: List[Tuple[str, str, str, str]] = []  # (key, section, label, value)
+        self._rows: List[Tuple[str, str, str, str]] = []  # (key, label, value, desc)
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="view_content_container"):
             yield SectionHeader(id="settings_header", classes="section_header")
             yield DataTable(id="settings_table", cursor_type="row")
+            yield Static("", id="settings_hint")
 
     def on_mount(self) -> None:
         self.query_one("#settings_table", DataTable).add_columns(
@@ -1702,17 +1710,48 @@ class SettingsView(TableFitMixin, Widget):
         except Exception:
             return None
 
+    def _format_value_cell(self, value: str, t: ThemeColors) -> Text:
+        low = value.strip().lower()
+        txt = Text(no_wrap=True)
+        if low == "on":
+            txt.append("● on", style=f"bold {t.success}")
+        elif low == "off" or low.startswith("off "):
+            txt.append(f"○ {value}", style=t.muted)
+        elif low == "no token":
+            txt.append("◌ no token", style=t.warning)
+        else:
+            txt.append(f"▸ {value}", style=f"bold {t.accent}")
+        return txt
+
+    def _update_hint(self, row_idx: int) -> None:
+        t = _theme(self)
+        try:
+            hint = self.query_one("#settings_hint", Static)
+            if 0 <= row_idx < len(self._rows):
+                _, label, _, desc = self._rows[row_idx]
+                hint.update(f"  [bold {t.secondary}]{label}[/]  [{t.border}]·[/]  [{t.muted}]{desc}[/]")
+            else:
+                hint.update("")
+        except Exception:
+            pass
+
     def set_rows(self, rows: List[Tuple[str, str, str, str]]) -> None:
-        """Update displayed settings rows: list of (key, section, label, value)."""
+        """Update displayed settings rows: list of (key, label, value, description)."""
+        t = _theme(self)
         self._rows = list(rows)
         table = self.query_one("#settings_table", DataTable)
         prev_row = table.cursor_row
         table.clear()
-        for idx, (key, section, label, value) in enumerate(self._rows, 1):
-            table.add_row(str(idx), f"{section} · {label}", value, key=f"set_{key}")
+        for idx, (key, label, value, _desc) in enumerate(self._rows, 1):
+            table.add_row(str(idx), label, self._format_value_cell(value, t), key=f"set_{key}")
         if self._rows:
-            table.move_cursor(row=max(0, min(prev_row, len(self._rows) - 1)))
+            target_row = max(0, min(prev_row, len(self._rows) - 1))
+            table.move_cursor(row=target_row)
+            self._update_hint(target_row)
         self._fit_tables()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._update_hint(event.cursor_row)
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if 0 <= event.cursor_row < len(self._rows):
@@ -1721,3 +1760,5 @@ class SettingsView(TableFitMixin, Widget):
 
     def refresh_theme(self) -> None:
         self.query_one("#settings_header", SectionHeader).refresh()
+        if self._rows:
+            self.set_rows(self._rows)
