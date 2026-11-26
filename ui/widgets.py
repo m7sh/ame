@@ -1147,8 +1147,8 @@ class NowPlayingView(Widget):
             int(total_w * 0.5) if self._side_panel and total_w >= 76 else total_w
         )
         reserved_rows = 14
-        max_rows = max(4, min(20, total_h - reserved_rows))
-        max_cols = max(8, min(48, avail_w - 6))
+        max_rows = max(4, min(36, total_h - reserved_rows))
+        max_cols = max(8, min(88, avail_w - 4))
         cols, rows = square_cell_dimensions(max_cols, max_rows)
         if cols > 0 and rows > 0:
             box.styles.width = cols

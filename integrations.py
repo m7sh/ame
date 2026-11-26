@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, Optional
 import requests
 
 from api import Track
-from artwork import sized_artwork_url
+from artwork import NOTIFICATION_ART_PX, PLAYER_ART_PX, sized_artwork_url
 
 # Default Discord Application ID fallback; user can override via env.
 DEFAULT_DISCORD_CLIENT_ID = os.environ.get("AME_DISCORD_CLIENT_ID", "1341440284083650660")
@@ -106,7 +106,7 @@ class MPRISController:
                     "artist": track.artist,
                     "album": track.album,
                     "duration_s": track.duration_seconds,
-                    "art_url": sized_artwork_url(track.thumbnail, 600) if track.thumbnail else "",
+                    "art_url": sized_artwork_url(track.thumbnail, NOTIFICATION_ART_PX) if track.thumbnail else "",
                 }
             }
         )
@@ -247,7 +247,7 @@ class DiscordPresence:
                 assets: Dict[str, Any] = {
                     "large_text": (track.album or track.title)[:128],
                 }
-                art_url = sized_artwork_url(track.thumbnail, 600) if track.thumbnail else ""
+                art_url = sized_artwork_url(track.thumbnail, PLAYER_ART_PX) if track.thumbnail else ""
                 if art_url:
                     assets["large_image"] = art_url
                 activity = {

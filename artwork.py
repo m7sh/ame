@@ -1,11 +1,13 @@
 """
-artwork.py - Album artwork URL upgrading, caching, and terminal image rendering.
+artwork.py - Album artwork URL upgrading, caching, and crisp terminal rendering.
 
-Uses size-aware Google artwork scaling (``sized_artwork_url``) paired with
-a bounded on-disk + in-memory PIL cache and ``textual-image`` rendering:
-- Native Sixel in foot / xterm / mlterm / wezterm
-- Terminal Graphics Protocol (TGP) in Kitty / Ghostty
-- 24-bit Truecolor Unicode half-cells (▀) fallback inside tmux or plain PTYs
+Ports BitChord's artwork resolution ladder and fallback pipeline:
+- Standard YouTube Music sizes (``PLAYER_ART_PX = 1200`` for Now Playing)
+- Host-aware Google ``=wN-hN`` / ``=sN`` rewriting preserving CDN flags
+- YouTube ``i.ytimg.com`` / ``img.youtube.com`` upgrades to ``maxresdefault`` /
+  ``sddefault`` with query-signature stripping and 404 fallback to ``hqdefault``
+- Letterbox bar trimming on 4:3 YouTube thumbnails before square cropping
+- High-quality Lanczos scaling and HiDPI-aware TGP / Sixel / Halfcell rendering
 """
 
 from __future__ import annotations
@@ -20,7 +22,8 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urlsplit
 
 import requests
 from PIL import Image as PILImage
@@ -45,10 +48,17 @@ try:
             tgp=False,
         )
 
+    from textual_image._pixeldata import PixelData as _TIPixelData
+    from textual_image._sixel import SixelOptions as _TISixelOptions
     from textual_image._terminal import get_cell_size, probe_terminal
+    from textual_image.renderable.halfcell import Image as _HalfcellRenderable
+    from textual_image.renderable.tgp import Image as _TGPRenderable
+    from textual_image.widget._base import Image as _TIBaseImage
     from textual_image.widget import HalfcellImage as _HalfcellWidget
     from textual_image.widget import Image as _AutoImageWidget
     from textual_image.widget.sixel import Image as _SixelWidget
+    from textual_image.widget.sixel import _ImageSixelImpl as _TISixelImpl
+    from textual_image.widget.sixel import _NoopRenderable as _TINoopRenderable
 
     _HAS_TEXTUAL_IMAGE = True
     _caps = probe_terminal()
@@ -62,20 +72,143 @@ except Exception:
     _AutoImageWidget = None  # type: ignore[assignment]
     _HalfcellWidget = None  # type: ignore[assignment]
     _SixelWidget = None  # type: ignore[assignment]
+    _TIPixelData = None  # type: ignore[assignment]
+    _TISixelOptions = None  # type: ignore[assignment]
+    _HalfcellRenderable = None  # type: ignore[assignment]
+    _TGPRenderable = None  # type: ignore[assignment]
+    _TIBaseImage = None  # type: ignore[assignment]
+    _TISixelImpl = None  # type: ignore[assignment]
+    _TINoopRenderable = None  # type: ignore[assignment]
 
 
-_GOOGLE_SIZE_RE = re.compile(r"=([ws]\d+[^/?#&]*)")
+# BitChord resolution ladder (Models.kt / artwork.ts)
+ROW_ART_PX = 160
+CARD_ART_PX = 480
+NOTIFICATION_ART_PX = 544
+HEADER_ART_PX = 720
+PLAYER_ART_PX = 1200
+SQUARE_SIZES: Tuple[int, ...] = (60, 120, 226, 544, 1200)
+
+_SIZE_HINT_RE = re.compile(r"w\d+-h\d+")
+_PARAM_SIZE_HINT_RE = re.compile(r"=s\d+")
+_YT_THUMB_NAME_RE = re.compile(
+    r"/(default|mqdefault|hqdefault|sddefault|hq720|maxresdefault)\.([a-zA-Z0-9]+)"
+)
+_YT_UPGRADED_RENDITIONS = frozenset({"sddefault", "hq720", "maxresdefault"})
+
 _DEFAULT_ART_DIR = Path.home() / ".cache" / "ame" / "artwork"
 _MAX_DISK_FILES = 160
 _MAX_MEM_ITEMS = 32
+_TGP_MIN_PIXEL_SIDE = 960
 
 
-def sized_artwork_url(url: str, size: int = 600) -> str:
-    """Return a high-resolution square URL when the host supports Google sizing params.
+def _extract_host(url: str) -> str:
+    """Return lowercased hostname without port for a URL or protocol-relative URL."""
+    clean = url.strip()
+    if clean.startswith("//"):
+        clean = "https:" + clean
+    elif "://" not in clean:
+        return ""
+    try:
+        return (urlsplit(clean).hostname or "").lower()
+    except Exception:
+        return ""
 
-    Scale artwork URL to ``size`` px for ``lh3.googleusercontent`` / ``ggpht``.
-    and ``yt3.ggpht`` thumbnails while leaving ``i.ytimg.com`` URLs intact (or
-    upgrading ``default``/``mqdefault`` to ``hqdefault``).
+
+def is_google_image_host(url: str) -> bool:
+    """True when URL points to Google's resizable image CDN (ggpht / googleusercontent)."""
+    host = _extract_host(url)
+    return (
+        host == "ggpht.com"
+        or host.endswith(".ggpht.com")
+        or host == "googleusercontent.com"
+        or host.endswith(".googleusercontent.com")
+    )
+
+
+def is_youtube_thumbnail_host(url: str) -> bool:
+    """True when URL points to YouTube's static thumbnail host (i.ytimg / img.youtube)."""
+    host = _extract_host(url)
+    return (
+        host == "i.ytimg.com"
+        or host.endswith(".ytimg.com")
+        or host == "img.youtube.com"
+        or host.endswith(".youtube.com")
+    )
+
+
+def _with_yt_rendition(url: str, match: re.Match[str], rendition: str) -> str:
+    """Rewrite a YouTube thumbnail rendition and drop the signed ``?sqp=...`` query."""
+    ext = match.group(2)
+    rewritten = f"{url[: match.start()]}/{rendition}.{ext}{url[match.end() :]}"
+    return rewritten.split("?", 1)[0]
+
+
+def _upgrade_youtube_thumbnail(url: str, size: int) -> str:
+    """Select the BitChord YouTube thumbnail rendition for ``size`` pixels."""
+    match = _YT_THUMB_NAME_RE.search(url)
+    if not match:
+        return url
+    current = match.group(1)
+    if size >= 480:
+        target = "maxresdefault"
+    elif size >= 240:
+        target = "sddefault"
+    elif current in _YT_UPGRADED_RENDITIONS:
+        target = "hqdefault"
+    else:
+        return url
+    return url if target == current else _with_yt_rendition(url, match, target)
+
+
+def youtube_thumbnail_fallback(url: str) -> Optional[str]:
+    """Return ``hqdefault`` fallback for an upgraded YouTube thumbnail, or None."""
+    if not url or not is_youtube_thumbnail_host(url):
+        return None
+    match = _YT_THUMB_NAME_RE.search(url)
+    if not match or match.group(1) not in _YT_UPGRADED_RENDITIONS:
+        return None
+    return _with_yt_rendition(url, match, "hqdefault")
+
+
+def youtube_thumbnail_candidates(url: str) -> List[str]:
+    """Return ordered fallback URLs for a YouTube thumbnail (highest res first)."""
+    if not url or not is_youtube_thumbnail_host(url):
+        return [url] if url else []
+    match = _YT_THUMB_NAME_RE.search(url)
+    if not match:
+        return [url]
+    current = match.group(1)
+    if current == "maxresdefault":
+        order = ("maxresdefault", "sddefault", "hqdefault")
+    elif current in ("sddefault", "hq720"):
+        order = (current, "hqdefault")
+    else:
+        return [url]
+    candidates: List[str] = []
+    for rendition in order:
+        cand = url if rendition == current else _with_yt_rendition(url, match, rendition)
+        if cand not in candidates:
+            candidates.append(cand)
+    return candidates
+
+
+def snap_artwork_size(size: int) -> int:
+    """Snap a requested pixel dimension onto YouTube Music's cached ``SQUARE_SIZES`` ladder."""
+    for candidate in SQUARE_SIZES:
+        if candidate >= size:
+            return candidate
+    return SQUARE_SIZES[-1]
+
+
+def sized_artwork_url(url: str, size: int = PLAYER_ART_PX) -> str:
+    """Return a high-resolution square URL matching BitChord's ``artworkAt`` rules.
+
+    - Replaces ``wN-hN`` hints while preserving CDN flags (e.g. ``-l90-rj``).
+    - On Google image hosts, also replaces ``=sN`` hints (preserving flags like
+      ``-c-k-c0x00ffffff-no-rj``) or appends ``=w{size}-h{size}-l90-rj`` when absent.
+    - On YouTube thumbnail hosts (``i.ytimg.com`` / ``img.youtube.com``), upgrades
+      to ``maxresdefault`` (>=480px) or ``sddefault`` (>=240px) and drops ``?sqp=...``.
     """
     if not url:
         return ""
@@ -83,18 +216,17 @@ def sized_artwork_url(url: str, size: int = 600) -> str:
     if not clean:
         return ""
 
-    if "googleusercontent.com" in clean or "ggpht.com" in clean:
-        if _GOOGLE_SIZE_RE.search(clean):
-            return _GOOGLE_SIZE_RE.sub(f"=w{size}-h{size}-l90-rj", clean, count=1)
-        if "=" not in clean.rsplit("/", 1)[-1]:
+    sized = _SIZE_HINT_RE.sub(f"w{size}-h{size}", clean)
+    if is_google_image_host(clean):
+        updated = _PARAM_SIZE_HINT_RE.sub(f"=s{size}", sized)
+        if updated == clean and "=" not in clean.rsplit("/", 1)[-1]:
             return f"{clean}=w{size}-h{size}-l90-rj"
-        return clean
+        return updated
 
-    if "i.ytimg.com" in clean or "img.youtube.com" in clean:
-        for low in ("/default.jpg", "/mqdefault.jpg"):
-            if low in clean:
-                return clean.replace(low, "/hqdefault.jpg")
-    return clean
+    if is_youtube_thumbnail_host(clean):
+        return _upgrade_youtube_thumbnail(sized, size)
+
+    return sized
 
 
 def image_backend_name() -> str:
@@ -134,16 +266,105 @@ def square_cell_dimensions(
     return (cols, rows)
 
 
+if _HAS_TEXTUAL_IMAGE and _TIPixelData is not None:
+
+    class _CrispPixelData(_TIPixelData):  # type: ignore[misc,valid-type]
+        """PixelData subclass using Lanczos resampling for sharper terminal artwork."""
+
+        def scaled(self, width: int, height: int) -> "_CrispPixelData":
+            scaled_image = self._image.resize(
+                (max(1, width), max(1, height)),
+                resample=PILImage.Resampling.LANCZOS,
+                reducing_gap=3.0,
+            )
+            return _CrispPixelData(scaled_image)
+
+    class _CrispHalfcellRenderable(_HalfcellRenderable):  # type: ignore[misc,valid-type]
+        def __init__(self, image: Any, width: Any = None, height: Any = None) -> None:
+            super().__init__(image, width=width, height=height)
+            self._image_data = _CrispPixelData(self._image_data.pil_image)
+
+    class _CrispTGPRenderable(_TGPRenderable):  # type: ignore[misc,valid-type]
+        def __init__(self, image: Any, width: Any = None, height: Any = None) -> None:
+            super().__init__(image, width=width, height=height)
+            self._image_data = _CrispPixelData(self._image_data.pil_image)
+
+        def _send_image_to_terminal(self, width: int, height: int) -> None:
+            # Preserve HiDPI / high-resolution source detail instead of clamping down
+            # to a fallback 10x20 cell pixel estimate before Kitty/Ghostty placement.
+            src_w = max(1, self._image_data.width)
+            src_h = max(1, self._image_data.height)
+            target_w = max(1, width)
+            target_h = max(1, height)
+            max_upscale = min(src_w / target_w, src_h / target_h)
+            desired_scale = max(2.0, _TGP_MIN_PIXEL_SIDE / max(target_w, target_h))
+            scale = min(max_upscale, desired_scale)
+            if scale > 1.0:
+                target_w = max(target_w, int(round(target_w * scale)))
+                target_h = max(target_h, int(round(target_h * scale)))
+            super()._send_image_to_terminal(target_w, target_h)
+
+    class _CrispSixelImpl(_TISixelImpl):  # type: ignore[misc,valid-type]
+        def _scale_image(self, image_data: Any, terminal_sizes: Any) -> Any:
+            scaled = super()._scale_image(image_data, terminal_sizes)
+            # Re-sample directly from original image_data using Lanczos
+            try:
+                from textual_image._geometry import ImageSize
+
+                styled_width, styled_height = self.parent._get_styled_size()  # type: ignore[attr-defined]
+                image_size = ImageSize(
+                    image_data.width,
+                    image_data.height,
+                    width=styled_width,
+                    height=styled_height,
+                )
+                pixel_width, pixel_height = image_size.get_pixel_size(
+                    self.content_size.width, self.content_size.height, terminal_sizes
+                )
+                return _CrispPixelData(image_data.pil_image).scaled(pixel_width, pixel_height)
+            except Exception:
+                return scaled
+
+    class _CrispSixelWidget(_SixelWidget, Renderable=_TINoopRenderable):  # type: ignore[misc,valid-type,call-arg]
+        DEFAULT_OPTIONS = _TISixelOptions(colors=256, quantize="adaptive")
+
+        def compose(self) -> Any:
+            yield _CrispSixelImpl(self.image, self._sixel_options)
+
+    class _CrispTGPWidget(_TIBaseImage, Renderable=_CrispTGPRenderable):  # type: ignore[misc,call-arg]
+        pass
+
+    class _CrispHalfcellWidget(_TIBaseImage, Renderable=_CrispHalfcellRenderable):  # type: ignore[misc,call-arg]
+        pass
+
+else:
+    _CrispSixelWidget = None  # type: ignore[assignment]
+    _CrispTGPWidget = None  # type: ignore[assignment]
+    _CrispHalfcellWidget = None  # type: ignore[assignment]
+
+
 def create_album_image_widget(**kwargs: Any) -> Any:
-    """Create the best terminal image widget for the maximized album window."""
-    if not _HAS_TEXTUAL_IMAGE or _AutoImageWidget is None:
+    """Create the highest-quality terminal image widget for the Now Playing album window."""
+    if not _HAS_TEXTUAL_IMAGE:
+        return None
+    if _IMAGE_BACKEND_NAME == "sixel" and _CrispSixelWidget is not None:
+        return _CrispSixelWidget(**kwargs)
+    if _IMAGE_BACKEND_NAME == "tgp" and _CrispTGPWidget is not None:
+        return _CrispTGPWidget(**kwargs)
+    if _IMAGE_BACKEND_NAME == "halfcell" and _CrispHalfcellWidget is not None:
+        return _CrispHalfcellWidget(**kwargs)
+    if _AutoImageWidget is None:
         return None
     return _AutoImageWidget(**kwargs)
 
 
 def create_mini_image_widget(**kwargs: Any) -> Any:
-    """Create a flicker-free Halfcell widget for the compact bottom mini-player."""
-    if not _HAS_TEXTUAL_IMAGE or _HalfcellWidget is None:
+    """Create a flicker-free Lanczos Halfcell widget for the compact bottom mini-player."""
+    if not _HAS_TEXTUAL_IMAGE:
+        return None
+    if _CrispHalfcellWidget is not None:
+        return _CrispHalfcellWidget(**kwargs)
+    if _HalfcellWidget is None:
         return None
     return _HalfcellWidget(**kwargs)
 
@@ -152,8 +373,61 @@ def is_sixel_backend() -> bool:
     return _IMAGE_BACKEND_NAME == "sixel"
 
 
+def _trim_letterbox_bars(img: PILImage.Image) -> PILImage.Image:
+    """Trim uniform near-black top/bottom letterbox bars on 4:3 YouTube thumbnails."""
+    w, h = img.size
+    if w <= 0 or h <= 0:
+        return img
+    ratio = w / h
+    # Only target mildly wide/4:3 frames (e.g. 480x360 hqdefault or 640x480 sddefault)
+    if not (1.20 <= ratio <= 1.50):
+        return img
+
+    gray = img.convert("L")
+    sample_w = min(w, 96)
+    small = gray.resize((sample_w, h), PILImage.Resampling.BILINEAR)
+    raw = small.tobytes()
+    max_trim = max(0, int(h * 0.20))
+
+    def _row_is_black(y: int) -> bool:
+        row = raw[y * sample_w : (y + 1) * sample_w]
+        return max(row) <= 22
+
+    top = 0
+    while top < max_trim and _row_is_black(top):
+        top += 1
+
+    bottom = h
+    while (h - bottom) < max_trim and bottom > top + 1 and _row_is_black(bottom - 1):
+        bottom -= 1
+
+    # Require balanced top+bottom bars and a non-black interior before cropping
+    if top < 4 or (h - bottom) < 4:
+        return img
+    trimmed_h = bottom - top
+    if trimmed_h < int(h * 0.55):
+        return img
+    mid_y = top + trimmed_h // 2
+    mid_row = raw[mid_y * sample_w : (mid_y + 1) * sample_w]
+    if max(mid_row) <= 24:
+        return img
+    return img.crop((0, top, w, bottom))
+
+
+def _prepare_square_artwork(img: PILImage.Image) -> PILImage.Image:
+    """Convert to RGB, strip YouTube 4:3 letterbox bars if present, and center-crop wide thumbs."""
+    rgb = _trim_letterbox_bars(img.convert("RGB"))
+    w, h = rgb.size
+    if w > 0 and h > 0 and w / h > 1.25:
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        rgb = rgb.crop((left, top, left + side, top + side))
+    return rgb
+
+
 class ArtworkCache:
-    """Thread-safe bounded in-memory + on-disk artwork cache."""
+    """Thread-safe bounded in-memory + on-disk artwork cache with BitChord YouTube fallback."""
 
     def __init__(
         self,
@@ -169,6 +443,7 @@ class ArtworkCache:
         self._lock = threading.Lock()
         self._mem: OrderedDict[str, PILImage.Image] = OrderedDict()
         self._inflight: Dict[str, threading.Event] = {}
+        self._missing_yt_urls: Set[str] = set()
 
     def _key(self, track_id: str, url: str) -> str:
         digest = hashlib.sha256(f"{track_id}:{url}".encode("utf-8")).hexdigest()[:24]
@@ -177,13 +452,14 @@ class ArtworkCache:
     def _disk_path(self, key: str) -> Path:
         return self.cache_dir / f"{key}.jpg"
 
-    def get_cached(self, track_id: str, url: str, size: int = 600) -> Optional[PILImage.Image]:
-        """Return cached PIL Image from memory or disk without network I/O."""
-        target_url = sized_artwork_url(url, size=size)
-        if not target_url:
-            return None
-        key = self._key(track_id, target_url)
+    def _candidate_urls(self, target_url: str) -> List[str]:
+        candidates = youtube_thumbnail_candidates(target_url)
+        with self._lock:
+            missing = set(self._missing_yt_urls)
+        filtered = [u for u in candidates if u not in missing]
+        return filtered or (candidates[-1:] if candidates else [])
 
+    def _get_cached_by_key(self, key: str) -> Optional[PILImage.Image]:
         with self._lock:
             img = self._mem.get(key)
             if img is not None:
@@ -208,8 +484,29 @@ class ArtworkCache:
                     pass
         return None
 
-    def fetch(self, track_id: str, url: str, size: int = 600) -> Optional[PILImage.Image]:
-        """Fetch artwork from cache or HTTP, coalescing concurrent requests."""
+    def get_cached(
+        self,
+        track_id: str,
+        url: str,
+        size: int = PLAYER_ART_PX,
+    ) -> Optional[PILImage.Image]:
+        """Return cached PIL Image from memory or disk without network I/O."""
+        target_url = sized_artwork_url(url, size=size)
+        if not target_url:
+            return None
+        for candidate in self._candidate_urls(target_url):
+            hit = self._get_cached_by_key(self._key(track_id, candidate))
+            if hit is not None:
+                return hit
+        return None
+
+    def fetch(
+        self,
+        track_id: str,
+        url: str,
+        size: int = PLAYER_ART_PX,
+    ) -> Optional[PILImage.Image]:
+        """Fetch artwork from cache or HTTP, coalescing concurrent requests and falling back on 404."""
         target_url = sized_artwork_url(url, size=size)
         if not target_url:
             return None
@@ -238,29 +535,39 @@ class ArtworkCache:
             return self.get_cached(track_id, url, size=size)
 
         try:
-            resp = self._session.get(
-                target_url,
-                timeout=6.0,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            if resp.status_code != 200 or not resp.content:
-                return None
+            candidates = self._candidate_urls(target_url)
+            for cand in candidates:
+                cand_key = self._key(track_id, cand)
+                existing = self._get_cached_by_key(cand_key)
+                if existing is not None:
+                    return existing
+                try:
+                    resp = self._session.get(
+                        cand,
+                        timeout=6.0,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                    )
+                except Exception:
+                    continue
 
-            with PILImage.open(io.BytesIO(resp.content)) as raw:
-                rgb = raw.convert("RGB")
-                # Center-crop non-square 16:9 YouTube thumbs only if mildly wide,
-                # preserving full artwork when nearly square.
-                w, h = rgb.size
-                if w > 0 and h > 0 and w / h > 1.25:
-                    side = min(w, h)
-                    left = (w - side) // 2
-                    top = (h - side) // 2
-                    rgb = rgb.crop((left, top, left + side, top + side))
+                status = getattr(resp, "status_code", 0)
+                content = getattr(resp, "content", b"")
+                if status == 404 and youtube_thumbnail_fallback(cand) is not None:
+                    with self._lock:
+                        self._missing_yt_urls.add(cand)
+                    continue
+                if status != 200 or not content:
+                    continue
 
-            self._store_disk(key, rgb)
-            self._store_mem(key, rgb)
-            return rgb
-        except Exception:
+                try:
+                    with PILImage.open(io.BytesIO(content)) as raw:
+                        rgb = _prepare_square_artwork(raw)
+                except Exception:
+                    continue
+
+                self._store_disk(cand_key, rgb)
+                self._store_mem(cand_key, rgb)
+                return rgb
             return None
         finally:
             with self._lock:
@@ -280,7 +587,7 @@ class ArtworkCache:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             path = self._disk_path(key)
             tmp = path.with_suffix(f".tmp.{os.getpid()}")
-            img.save(tmp, format="JPEG", quality=90)
+            img.save(tmp, format="JPEG", quality=95, subsampling=0)
             tmp.replace(path)
             self._prune_disk()
         except Exception:

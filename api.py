@@ -89,9 +89,25 @@ def _extract_thumbnail_url(item: Dict[str, Any]) -> str:
     if isinstance(thumbs, dict):
         thumbs = thumbs.get("thumbnails", [])
     if isinstance(thumbs, list) and thumbs:
-        last = thumbs[-1]
-        if isinstance(last, dict):
-            return str(last.get("url") or "")
+        best_url = ""
+        best_area = -1
+        for entry in thumbs:
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get("url") or "")
+            if not url:
+                continue
+            try:
+                w = int(entry.get("width") or 0)
+                h = int(entry.get("height") or 0)
+            except (TypeError, ValueError):
+                w, h = 0, 0
+            area = w * h
+            if area >= best_area:
+                best_area = area
+                best_url = url
+        if best_url:
+            return best_url
     return ""
 
 
